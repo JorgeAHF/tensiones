@@ -6,7 +6,7 @@ import math
 import random
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional
 
 import numpy as np
@@ -32,8 +32,25 @@ class Sample:
     acceleration_g: np.ndarray
 
 
+@dataclass
+class GatewayStatus:
+    host: Optional[str]
+    port: Optional[int]
+    connected: bool
+    message: str = ""
+
+
 class MSCLClient:
     """Abstract client that wraps MSCL operations."""
+
+    def connect_gateway(self, host: str, port: int) -> GatewayStatus:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def disconnect_gateway(self) -> GatewayStatus:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def gateway_status(self) -> GatewayStatus:  # pragma: no cover - interface
+        raise NotImplementedError
 
     def list_nodes(self) -> List[SensorInfo]:  # pragma: no cover - interface
         raise NotImplementedError
@@ -58,8 +75,34 @@ class DemoMSCLClient(MSCLClient):
         self._callbacks: Dict[str, Callable[[Sample], None]] = {}
         self._noise_level = noise_level
         self._phase: Dict[str, float] = {info.sensor_id: 0.0 for info in sensors}
+        self._gateway_host: Optional[str] = None
+        self._gateway_port: Optional[int] = None
+        self._connected = False
+
+    def connect_gateway(self, host: str, port: int) -> GatewayStatus:
+        self._gateway_host = host
+        self._gateway_port = port
+        self._connected = True
+        logger.info("Connected to demo gateway at %s:%s", host, port)
+        return GatewayStatus(host=host, port=port, connected=True, message="Demo gateway conectado")
+
+    def disconnect_gateway(self) -> GatewayStatus:
+        for sensor_id in list(self._threads):
+            self.stop_streaming(sensor_id)
+        logger.info("Disconnected from demo gateway")
+        self._connected = False
+        status = GatewayStatus(host=self._gateway_host, port=self._gateway_port, connected=False, message="Demo gateway desconectado")
+        self._gateway_host = None
+        self._gateway_port = None
+        return status
+
+    def gateway_status(self) -> GatewayStatus:
+        return GatewayStatus(host=self._gateway_host, port=self._gateway_port, connected=self._connected)
 
     def list_nodes(self) -> List[SensorInfo]:
+        if not self._connected:
+            logger.debug("Demo gateway not connected; returning empty node list")
+            return []
         return list(self._sensors.values())
 
     def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str]) -> None:
@@ -71,6 +114,9 @@ class DemoMSCLClient(MSCLClient):
         logger.info("Configured demo sensor %s fs=%.2f axes=%s", sensor_id, sample_rate_hz, axes)
 
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:
+        if not self._connected:
+            logger.warning("Cannot start streaming for %s without gateway connection", sensor_id)
+            return
         if sensor_id in self._threads:
             logger.warning("Sensor %s already streaming", sensor_id)
             return
@@ -134,7 +180,9 @@ def create_demo_client(stays_config: List[Dict[str, str]], default_fs: float) ->
         )
         for stay in stays_config
     ]
-    return DemoMSCLClient(sensors)
+    client = DemoMSCLClient(sensors)
+    client.connect_gateway("demo-gateway", 5500)
+    return client
 
 
 __all__ = [
@@ -142,5 +190,6 @@ __all__ = [
     "DemoMSCLClient",
     "SensorInfo",
     "Sample",
+    "GatewayStatus",
     "create_demo_client",
 ]

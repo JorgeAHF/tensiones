@@ -1,5 +1,9 @@
 timezone: "America/Mexico_City"
 default_fs_hz: 256
+mscl_gateway:
+  host: "127.0.0.1"
+  port: 5500
+  auto_connect: true
 analysis:
   window_sec: 30
   update_period_sec: 5

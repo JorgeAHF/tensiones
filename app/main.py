@@ -96,7 +96,16 @@ def main() -> None:
         storage_base=storage_base,
         realtime_store=realtime_store,
     )
-    manager.discover()
+    gateway_cfg = app_config.get("mscl_gateway", {})
+    if gateway_cfg.get("auto_connect", False):
+        host = gateway_cfg.get("host", "127.0.0.1")
+        port = int(gateway_cfg.get("port", 5000))
+        try:
+            status = manager.connect_gateway(host, port)
+            if not status.connected:
+                LOGGER.warning("Gateway auto-connect reported disconnected: %s", status.message)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            LOGGER.warning("Failed to auto-connect to gateway %s:%s -> %s", host, port, exc)
 
     dash_app = DashApp(
         manager=manager,
