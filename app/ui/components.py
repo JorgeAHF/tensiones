@@ -20,68 +20,35 @@ SEM_COLOR_MAP = {
 
 
 def network_table(states: Iterable[SensorState]) -> dash.development.base_component.Component:
-    data = []
+    header = html.Thead(
+        html.Tr(
+            [
+                html.Th("Sensor"),
+                html.Th("Tirante"),
+                html.Th("Fs (Hz)"),
+                html.Th("Streaming"),
+                html.Th("Última muestra"),
+            ]
+        )
+    )
+    rows = []
     for state in states:
         info = state.info
-        data.append(
-            {
-                "sensor": info.sensor_id,
-                "stay": info.stay_id,
-                "fs": round(info.sample_rate_hz, 4),
-                "data_format": info.data_format,
-                "acq_duration": round(info.acquisition_duration_sec, 2),
-                "streaming": "Sí" if state.streaming else "No",
-                "last_sample": f"{state.last_sample_timestamp:.1f}" if state.last_sample_timestamp else "-",
-            }
+        rows.append(
+            html.Tr(
+                [
+                    html.Td(info.sensor_id),
+                    html.Td(info.stay_id),
+                    html.Td(f"{info.sample_rate_hz:.2f}"),
+                    html.Td(dbc.Badge("Sí", color="success") if state.streaming else dbc.Badge("No", color="secondary")),
+                    html.Td(
+                        f"{state.last_sample_timestamp:.1f}" if state.last_sample_timestamp else "-"
+                    ),
+                ]
+            )
         )
-    columns = [
-        {"name": "Sensor", "id": "sensor", "editable": False},
-        {"name": "Tirante", "id": "stay", "editable": False},
-        {"name": "Fs (Hz)", "id": "fs", "type": "numeric"},
-        {
-            "name": "Tipo de dato",
-            "id": "data_format",
-            "presentation": "dropdown",
-        },
-        {
-            "name": "Duración adquisición (s)",
-            "id": "acq_duration",
-            "type": "numeric",
-        },
-        {"name": "Streaming", "id": "streaming", "editable": False},
-        {"name": "Última muestra", "id": "last_sample", "editable": False},
-    ]
-    dropdown_map = {
-        "data_format": {
-            "options": [
-                {"label": "Acc XYZ", "value": "acceleration_xyz"},
-                {"label": "Acc X", "value": "acceleration_x"},
-                {"label": "Acc Y", "value": "acceleration_y"},
-                {"label": "Acc Z", "value": "acceleration_z"},
-            ]
-        }
-    }
-    return dash_table.DataTable(
-        id="network-table",
-        data=data,
-        columns=columns,
-        editable=True,
-        dropdown=dropdown_map,
-        style_table={"overflowX": "auto"},
-        style_header={"fontWeight": "bold"},
-        style_data_conditional=[
-            {
-                "if": {"filter_query": '{streaming} = "Sí"', "column_id": "streaming"},
-                "backgroundColor": "#d4edda",
-                "color": "#155724",
-            },
-            {
-                "if": {"filter_query": '{streaming} = "No"', "column_id": "streaming"},
-                "backgroundColor": "#f8f9fa",
-                "color": "#6c757d",
-            },
-        ],
-    )
+    body = html.Tbody(rows)
+    return dbc.Table([header, body], bordered=True, hover=True, responsive=True, striped=True, className="bg-white shadow-sm")
 
 
 def realtime_card(

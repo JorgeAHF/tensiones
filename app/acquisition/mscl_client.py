@@ -20,8 +20,6 @@ class SensorInfo:
     stay_id: str
     sample_rate_hz: float
     axes: List[str]
-    data_format: str = "acceleration_xyz"
-    acquisition_duration_sec: float = 1.0
     battery_percent: Optional[float] = None
 
 
@@ -32,7 +30,6 @@ class Sample:
     fs_hz: float
     timestamp: float
     acceleration_g: np.ndarray
-    data_format: str = "acceleration_xyz"
 
 
 @dataclass
@@ -59,17 +56,6 @@ class MSCLClient:
         raise NotImplementedError
 
     def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str]) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-    def add_manual_sensor(
-        self,
-        sensor_id: str,
-        stay_id: str,
-        sample_rate_hz: float,
-        axes: Iterable[str],
-        data_format: str,
-        acquisition_duration_sec: float,
-    ) -> SensorInfo:  # pragma: no cover - interface
         raise NotImplementedError
 
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:  # pragma: no cover
@@ -127,42 +113,6 @@ class DemoMSCLClient(MSCLClient):
         info.axes = list(axes)
         logger.info("Configured demo sensor %s fs=%.2f axes=%s", sensor_id, sample_rate_hz, axes)
 
-    def add_manual_sensor(
-        self,
-        sensor_id: str,
-        stay_id: str,
-        sample_rate_hz: float,
-        axes: Iterable[str],
-        data_format: str,
-        acquisition_duration_sec: float,
-    ) -> SensorInfo:
-        info = self._sensors.get(sensor_id)
-        if info is None:
-            info = SensorInfo(
-                sensor_id=sensor_id,
-                stay_id=stay_id,
-                sample_rate_hz=sample_rate_hz,
-                axes=list(axes),
-                data_format=data_format,
-                acquisition_duration_sec=acquisition_duration_sec,
-            )
-            self._sensors[sensor_id] = info
-            self._phase[sensor_id] = 0.0
-        else:
-            info.sample_rate_hz = sample_rate_hz
-            info.axes = list(axes)
-            info.data_format = data_format
-            info.acquisition_duration_sec = acquisition_duration_sec
-        logger.info(
-            "Manual demo sensor registered %s stay=%s fs=%.2f data=%s duration=%.2fs",
-            sensor_id,
-            stay_id,
-            sample_rate_hz,
-            data_format,
-            acquisition_duration_sec,
-        )
-        return info
-
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:
         if not self._connected:
             logger.warning("Cannot start streaming for %s without gateway connection", sensor_id)
@@ -181,8 +131,7 @@ class DemoMSCLClient(MSCLClient):
             f1 = random.uniform(1.5, 3.5)
             while not stop_event.is_set():
                 samples = []
-                batch_samples = max(1, int(info.sample_rate_hz * max(info.acquisition_duration_sec, 1.0)))
-                for _ in range(batch_samples):
+                for _ in range(int(info.sample_rate_hz)):
                     t += dt
                     base_signal = math.sin(2 * math.pi * f1 * t)
                     noise = np.random.normal(scale=self._noise_level, size=3)
@@ -199,7 +148,6 @@ class DemoMSCLClient(MSCLClient):
                     fs_hz=info.sample_rate_hz,
                     timestamp=time.time(),
                     acceleration_g=batch,
-                    data_format=info.data_format,
                 )
                 callback(sample)
             logger.info("Demo stream stopped for %s", sensor_id)
@@ -222,20 +170,13 @@ class DemoMSCLClient(MSCLClient):
         self._callbacks.pop(sensor_id, None)
 
 
-def create_demo_client(
-    stays_config: List[Dict[str, str]],
-    default_fs: float,
-    default_data_format: str = "acceleration_xyz",
-    default_acquisition_sec: float = 1.0,
-) -> DemoMSCLClient:
+def create_demo_client(stays_config: List[Dict[str, str]], default_fs: float) -> DemoMSCLClient:
     sensors = [
         SensorInfo(
             sensor_id=stay["sensor_id"],
             stay_id=stay["stay_id"],
             sample_rate_hz=default_fs,
             axes=["x", "y", "z"],
-            data_format=default_data_format,
-            acquisition_duration_sec=default_acquisition_sec,
         )
         for stay in stays_config
     ]

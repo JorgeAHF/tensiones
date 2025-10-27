@@ -26,6 +26,3 @@ ui:
   history_hours: 1
 modes:
   demo: true
-sensor_defaults:
-  data_format: "acceleration_xyz"
-  acquisition_seconds: 1.0

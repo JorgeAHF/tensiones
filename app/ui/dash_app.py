@@ -113,13 +113,6 @@ class DashApp:
         gateway_port = self.gateway_config.get("port", 5000)
         refresh_interval = self.app_config.get("ui", {}).get("refresh_ms", 1000)
 
-        manual_data_options = [
-            {"label": "Acc XYZ", "value": "acceleration_xyz"},
-            {"label": "Acc X", "value": "acceleration_x"},
-            {"label": "Acc Y", "value": "acceleration_y"},
-            {"label": "Acc Z", "value": "acceleration_z"},
-        ]
-
         network_tab = dbc.Tab(
             label="Red",
             tab_id="network",
@@ -199,84 +192,6 @@ class DashApp:
                         dbc.CardHeader("Sensores"),
                         dbc.CardBody(
                             [
-                                dbc.Row(
-                                    [
-                                        dbc.Col(
-                                            [
-                                                dbc.Label("Alta manual (ID sensor)"),
-                                                dbc.Input(
-                                                    id="manual-sensor-id",
-                                                    type="text",
-                                                    placeholder="Ej. 0x1234",
-                                                ),
-                                            ],
-                                            md=3,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                dbc.Label("Tirante"),
-                                                dcc.Dropdown(
-                                                    id="manual-stay-id",
-                                                    options=[
-                                                        {"label": stay.stay_id, "value": stay.stay_id}
-                                                        for stay in self.stays
-                                                    ],
-                                                    placeholder="Selecciona tirante",
-                                                ),
-                                            ],
-                                            md=3,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                dbc.Label("Fs (Hz)"),
-                                                dbc.Input(
-                                                    id="manual-sample-rate",
-                                                    type="number",
-                                                    min=1,
-                                                    value=self.app_config.get("default_fs_hz", 256),
-                                                ),
-                                            ],
-                                            md=2,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                dbc.Label("Tipo dato"),
-                                                dcc.Dropdown(
-                                                    id="manual-data-format",
-                                                    options=manual_data_options,
-                                                    value=manual_data_options[0]["value"],
-                                                    clearable=False,
-                                                ),
-                                            ],
-                                            md=2,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                dbc.Label("Duración (s)"),
-                                                dbc.Input(
-                                                    id="manual-duration",
-                                                    type="number",
-                                                    min=0.1,
-                                                    step=0.1,
-                                                    value=self.app_config.get("sensor_defaults", {}).get(
-                                                        "acquisition_seconds", 1.0
-                                                    ),
-                                                ),
-                                            ],
-                                            md=2,
-                                        ),
-                                        dbc.Col(
-                                            dbc.Button(
-                                                "Agregar manual",
-                                                id="btn-add-manual-sensor",
-                                                color="info",
-                                                className="mt-4",
-                                            ),
-                                            width="auto",
-                                        ),
-                                    ],
-                                    className="g-2 align-items-end mb-3",
-                                ),
                                 dbc.Row(
                                     [
                                         dbc.Col(
@@ -702,7 +617,6 @@ class DashApp:
             Output("realtime-sensor", "options"),
             Output("history-sensor", "options"),
             Output("gateway-status", "children"),
-            Output("manual-stay-id", "options"),
             Input("btn-discover", "n_clicks"),
             Input("interval", "n_intervals"),
         )
@@ -715,12 +629,9 @@ class DashApp:
             stay_options = [
                 {"label": stay.stay_id, "value": stay.sensor_id} for stay in self.stays
             ]
-            manual_options = [
-                {"label": stay.stay_id, "value": stay.stay_id} for stay in self.stays
-            ]
             table = components.network_table(states)
             gateway_badge = components.gateway_status_badge(self.manager.get_gateway_status())
-            return table, stay_options, stay_options, stay_options, gateway_badge, manual_options
+            return table, stay_options, stay_options, stay_options, gateway_badge
 
         @app.callback(
             Output("network-feedback", "children"),
@@ -758,62 +669,6 @@ class DashApp:
                 feedback = dbc.Alert(str(exc), color="danger", dismissable=True)
             badge = components.gateway_status_badge(status)
             return feedback, badge
-
-        @app.callback(
-            Output("network-feedback", "children", allow_duplicate=True),
-            Input("btn-add-manual-sensor", "n_clicks"),
-            State("manual-sensor-id", "value"),
-            State("manual-stay-id", "value"),
-            State("manual-sample-rate", "value"),
-            State("manual-data-format", "value"),
-            State("manual-duration", "value"),
-            prevent_initial_call=True,
-        )
-        def add_manual_sensor(_, sensor_id, stay_id, fs_value, data_format, duration):
-            target_sensor = (sensor_id or "").strip()
-            stay_obj = None
-            if stay_id:
-                stay_obj = next((s for s in self.stays if s.stay_id == stay_id), None)
-                if stay_obj is None:
-                    return dbc.Alert("Tirante no encontrado", color="danger", dismissable=True)
-                if target_sensor:
-                    new_sensor_id = target_sensor
-                else:
-                    new_sensor_id = stay_obj.sensor_id
-                self.manager.reassign_stay_sensor(stay_id, new_sensor_id)
-                stay_obj.sensor_id = new_sensor_id
-                target_sensor = new_sensor_id
-            if not target_sensor:
-                return dbc.Alert("Ingresa el ID del sensor", color="warning", dismissable=True)
-            try:
-                sample_rate = float(fs_value) if fs_value is not None else self.app_config.get("default_fs_hz", 256)
-                acquisition = float(duration) if duration is not None else 1.0
-                self.manager.add_manual_sensor(
-                    sensor_id=target_sensor,
-                    sample_rate=sample_rate,
-                    data_format=data_format or "acceleration_xyz",
-                    acquisition_duration=acquisition,
-                )
-                stay_label = stay_obj.stay_id if stay_obj else target_sensor
-                message = f"Sensor {target_sensor} agregado para {stay_label}"
-                return dbc.Alert(message, color="success", dismissable=True)
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.exception("Error agregando sensor manual")
-                return dbc.Alert(str(exc), color="danger", dismissable=True)
-
-        @app.callback(
-            Output("network-feedback", "children", allow_duplicate=True),
-            Input("network-table", "data_timestamp"),
-            State("network-table", "data"),
-            prevent_initial_call=True,
-        )
-        def apply_table_changes(_, data):
-            try:
-                self.manager.apply_sensor_configs(data or [])
-                return dbc.Alert("Sensores actualizados", color="success", dismissable=True)
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.exception("Error actualizando configuración de sensores")
-                return dbc.Alert(str(exc), color="danger", dismissable=True)
 
         @app.callback(
             Output("history-status", "children"),

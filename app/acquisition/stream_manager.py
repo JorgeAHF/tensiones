@@ -98,10 +98,6 @@ class RealtimeDataStore:
         with self._lock:
             return {k: v for k, v in self._analysis.items()}
 
-    def drop(self, sensor_id: str) -> None:
-        with self._lock:
-            self._analysis.pop(sensor_id, None)
-
 
 class SensorBuffer:
     """Rolling buffer of acceleration samples for analysis."""
@@ -235,13 +231,6 @@ class StreamManager:
             if state is None:
                 state = SensorState(info=info)
                 self.sensors[info.sensor_id] = state
-            else:
-                state.info.sample_rate_hz = info.sample_rate_hz
-                state.info.axes = info.axes
-                state.info.data_format = getattr(info, "data_format", state.info.data_format)
-                state.info.acquisition_duration_sec = getattr(
-                    info, "acquisition_duration_sec", state.info.acquisition_duration_sec
-                )
             states.append(state)
         return states
 
@@ -263,76 +252,6 @@ class StreamManager:
         self.mode.setdefault(sensor_id, "AUTO")
         self.guided_f1.setdefault(sensor_id, None)
         self.guided_tol.setdefault(sensor_id, 0.1)
-
-    def add_manual_sensor(
-        self,
-        sensor_id: str,
-        sample_rate: float,
-        data_format: str,
-        acquisition_duration: float,
-    ) -> SensorState:
-        if not self._gateway_status.connected:
-            raise RuntimeError("Gateway no conectado; conecta antes de registrar sensores manualmente")
-        stay = self.stays.get(sensor_id)
-        if stay is None:
-            raise KeyError(f"Sensor {sensor_id} no está asociado a ningún tirante configurado")
-        axes = ["x", "y", "z"]
-        info = self.client.add_manual_sensor(
-            sensor_id=sensor_id,
-            stay_id=stay.stay_id,
-            sample_rate_hz=sample_rate,
-            axes=axes,
-            data_format=data_format,
-            acquisition_duration_sec=acquisition_duration,
-        )
-        state = self.sensors.get(sensor_id)
-        if state is None:
-            state = SensorState(info=info)
-            self.sensors[sensor_id] = state
-        else:
-            state.info = info
-        self.configure(sensor_id, sample_rate, axes)
-        state.info.data_format = data_format
-        state.info.acquisition_duration_sec = acquisition_duration
-        logger.info(
-            "Manual sensor ready sensor=%s stay=%s fs=%.2f data=%s duration=%.2fs",
-            sensor_id,
-            stay.stay_id,
-            sample_rate,
-            data_format,
-            acquisition_duration,
-        )
-        return state
-
-    def apply_sensor_configs(self, configs: List[Dict[str, object]]) -> None:
-        for row in configs:
-            sensor_id = str(row.get("sensor"))
-            if not sensor_id or sensor_id not in self.sensors:
-                continue
-            info = self.sensors[sensor_id].info
-            fs_value = row.get("fs")
-            data_format = str(row.get("data_format") or info.data_format)
-            acquisition = row.get("acq_duration") or info.acquisition_duration_sec
-            try:
-                fs_float = float(fs_value) if fs_value is not None else info.sample_rate_hz
-                acquisition_float = float(acquisition)
-            except (TypeError, ValueError):
-                logger.warning("Valores inválidos para sensor %s en tabla de configuración", sensor_id)
-                continue
-            acquisition_float = max(0.1, acquisition_float)
-            fs_changed = abs(fs_float - info.sample_rate_hz) > 1e-6
-            if fs_changed:
-                self.configure(sensor_id, fs_float, info.axes)
-                info.sample_rate_hz = fs_float
-            info.data_format = data_format
-            info.acquisition_duration_sec = acquisition_float
-            logger.debug(
-                "Sensor actualizado desde UI sensor=%s fs=%.2f data=%s duration=%.2fs",
-                sensor_id,
-                info.sample_rate_hz,
-                info.data_format,
-                info.acquisition_duration_sec,
-            )
 
     def start(self, sensor_id: str) -> None:
         if not self._gateway_status.connected:
@@ -536,37 +455,6 @@ class StreamManager:
                     "qa",
                 ],
             )
-
-    def reassign_stay_sensor(self, stay_id: str, new_sensor_id: str) -> StayDefinition:
-        current_sensor_id = None
-        stay_obj: Optional[StayDefinition] = None
-        for sensor_key, stay in list(self.stays.items()):
-            if stay.stay_id == stay_id:
-                current_sensor_id = sensor_key
-                stay_obj = stay
-                break
-        if stay_obj is None or current_sensor_id is None:
-            raise KeyError(f"No se encontró tirante {stay_id}")
-        if current_sensor_id == new_sensor_id:
-            return stay_obj
-        self.stays.pop(current_sensor_id, None)
-        stay_obj.sensor_id = new_sensor_id
-        self.stays[new_sensor_id] = stay_obj
-        # limpiar estados previos
-        self.sensors.pop(current_sensor_id, None)
-        self.buffers.pop(current_sensor_id, None)
-        self.estimators.pop(current_sensor_id, None)
-        self.mode.pop(current_sensor_id, None)
-        self.guided_f1.pop(current_sensor_id, None)
-        self.guided_tol.pop(current_sensor_id, None)
-        self.realtime_store.drop(current_sensor_id)
-        logger.info(
-            "Tirante %s reasignado de sensor %s a %s",
-            stay_id,
-            current_sensor_id,
-            new_sensor_id,
-        )
-        return stay_obj
 
 
 __all__ = [

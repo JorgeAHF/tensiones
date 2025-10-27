@@ -44,20 +44,12 @@ def build_stays(stays_cfg: Dict) -> List[StayDefinition]:
 
 def create_client(app_config: Dict, stays: List[StayDefinition]) -> MSCLClient:
     default_fs = float(app_config.get("default_fs_hz", 256))
-    sensor_defaults = app_config.get("sensor_defaults", {})
-    default_format = sensor_defaults.get("data_format", "acceleration_xyz")
-    default_acq = float(sensor_defaults.get("acquisition_seconds", 1.0))
     demo_mode = app_config.get("modes", {}).get("demo", True)
     if demo_mode:
         stays_config = [
             {"sensor_id": stay.sensor_id, "stay_id": stay.stay_id} for stay in stays
         ]
-        return create_demo_client(
-            stays_config,
-            default_fs=default_fs,
-            default_data_format=default_format,
-            default_acquisition_sec=default_acq,
-        )
+        return create_demo_client(stays_config, default_fs)
     raise NotImplementedError(
         "Real MSCL client not implemented in this environment. Configure demo mode."
     )
