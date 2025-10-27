@@ -1,0 +1,24 @@
+timezone: "America/Mexico_City"
+default_fs_hz: 256
+analysis:
+  window_sec: 30
+  update_period_sec: 5
+  fmin_hz: 0.3
+  fmax_hz: 8.0
+  welch_window: "hann"
+  nperseg_sec: 4
+  overlap: 0.5
+  bandpass: [0.2, 10.0]
+  snr_min_db: 10.0
+  max_rel_f1_change: 0.1
+storage:
+  base_dir: "./data"
+  rotation:
+    mode: "time"
+    minutes: 10
+    max_mb: 100
+ui:
+  refresh_ms: 1000
+  history_hours: 1
+modes:
+  demo: true
