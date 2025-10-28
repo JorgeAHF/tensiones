@@ -100,6 +100,14 @@ Ejecutar pytest desde la raíz del proyecto:
 pytest
 ```
 
+Esto incluye las pruebas sintéticas de `StreamManager` ubicadas en `tests/test_stream_manager.py`,
+las cuales generan señales con distintos niveles de calidad (buena SNR, sin pico e inestabilidad)
+para verificar tensiones, banderas de QA y la escritura de CSV. Puede ejecutarlas de forma aislada con:
+
+```bash
+pytest tests/test_stream_manager.py
+```
+
 ## Notas
 
 - El modo demo genera señales sinusoidales con ruido para validar toda la cadena de procesamiento.
