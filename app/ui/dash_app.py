@@ -208,6 +208,7 @@ class DashApp:
         self.app_config_path = app_config_path
         self.stays_config_path = stays_config_path
         self.app_config = app_config
+        self.demo_mode = bool(self.app_config.get("modes", {}).get("demo", True))
         self.gateway_config = app_config.get("mscl_gateway", {})
         self.storage_base = Path(
             app_config.get("storage", {}).get("base_dir", "./data")
@@ -849,8 +850,8 @@ class DashApp:
             Output("realtime-sensor", "options"),
             Output("history-sensor", "options"),
             Output("gateway-status", "children"),
-            Output("realtime-sensor", "value"),
-            Output("history-sensor", "value"),
+            Output("network-summary", "children"),
+            Output("config-sensor", "options"),
             Input("btn-discover", "n_clicks"),
             Input("interval", "n_intervals"),
             State("realtime-sensor", "value"),
@@ -877,14 +878,15 @@ class DashApp:
                 selected_history = default_sensor
             table = components.network_table(states)
             gateway_badge = components.gateway_status_badge(self.manager.get_gateway_status())
+            summary = components.network_summary(states, demo_mode=self.demo_mode)
             return (
                 table,
                 stay_options,
                 stay_options,
                 stay_options,
                 gateway_badge,
-                selected_realtime,
-                selected_history,
+                summary,
+                stay_options,
             )
 
         @app.callback(

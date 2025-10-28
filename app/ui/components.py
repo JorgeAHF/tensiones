@@ -72,7 +72,11 @@ def network_table(states: Iterable[SensorState]) -> dash.development.base_compon
     return dbc.Table([header, body], bordered=True, hover=True, responsive=True, striped=True, className="bg-white shadow-sm")
 
 
-def network_summary(states: Iterable[SensorState]) -> dash.development.base_component.Component:
+def network_summary(
+    states: Iterable[SensorState],
+    *,
+    demo_mode: bool = False,
+) -> dash.development.base_component.Component:
     states_list = list(states)
     total = len(states_list)
     streaming = sum(1 for state in states_list if state.streaming)
@@ -82,11 +86,28 @@ def network_summary(states: Iterable[SensorState]) -> dash.development.base_comp
         if state.last_sample_timestamp:
             if latest_timestamp is None or state.last_sample_timestamp > latest_timestamp:
                 latest_timestamp = state.last_sample_timestamp
+    mode_label = "Demo" if demo_mode else "Hardware real"
     badges = [
         dbc.Badge(f"Sensores: {total}", color="info", className="p-2 me-2"),
         dbc.Badge(f"Streaming: {streaming}", color="success", className="p-2 me-2"),
         dbc.Badge(f"Detenidos: {paused}", color="warning", className="p-2 me-2"),
     ]
+    if streaming:
+        badges.append(
+            dbc.Badge(
+                f"Adquisición activa ({mode_label})",
+                color="success",
+                className="p-2 me-2",
+            )
+        )
+    else:
+        badges.append(
+            dbc.Badge(
+                f"Adquisición detenida ({mode_label})",
+                color="secondary",
+                className="p-2 me-2",
+            )
+        )
     if latest_timestamp:
         badges.append(
             dbc.Badge(
