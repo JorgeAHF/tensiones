@@ -849,12 +849,14 @@ class DashApp:
             Output("realtime-sensor", "options"),
             Output("history-sensor", "options"),
             Output("gateway-status", "children"),
-            Output("network-summary", "children"),
-            Output("config-sensor", "options"),
+            Output("realtime-sensor", "value"),
+            Output("history-sensor", "value"),
             Input("btn-discover", "n_clicks"),
             Input("interval", "n_intervals"),
+            State("realtime-sensor", "value"),
+            State("history-sensor", "value"),
         )
-        def update_network(_, __):
+        def update_network(_, __, realtime_value, history_value):
             triggered = callback_context.triggered[0]["prop_id"] if callback_context.triggered else ""
             if "btn-discover" in triggered:
                 states = self.manager.discover()
@@ -863,17 +865,26 @@ class DashApp:
             stay_options = [
                 {"label": stay.stay_id, "value": stay.sensor_id} for stay in self.stays
             ]
+            valid_values = {opt["value"] for opt in stay_options}
+            default_sensor = stay_options[0]["value"] if stay_options else None
+            if realtime_value in valid_values:
+                selected_realtime = realtime_value
+            else:
+                selected_realtime = default_sensor
+            if history_value in valid_values:
+                selected_history = history_value
+            else:
+                selected_history = default_sensor
             table = components.network_table(states)
             gateway_badge = components.gateway_status_badge(self.manager.get_gateway_status())
-            summary = components.network_summary(states)
             return (
                 table,
                 stay_options,
                 stay_options,
                 stay_options,
                 gateway_badge,
-                summary,
-                stay_options,
+                selected_realtime,
+                selected_history,
             )
 
         @app.callback(
@@ -1080,6 +1091,8 @@ class DashApp:
             Input("realtime-date", "date"),
         )
         def update_realtime(_, sensor_id, date_value):
+            if not sensor_id and self.stays:
+                sensor_id = self.stays[0].sensor_id
             target_date = _parse_date_value(date_value)
             snapshot = self.realtime.snapshot()
             analysis = snapshot.get(sensor_id) if sensor_id else None
@@ -1124,6 +1137,8 @@ class DashApp:
             Input("history-date", "date"),
         )
         def update_history(_, sensor_id, date_value):
+            if not sensor_id and self.stays:
+                sensor_id = self.stays[0].sensor_id
             target_date = _parse_date_value(date_value)
             fig = go.Figure()
             if not sensor_id:
