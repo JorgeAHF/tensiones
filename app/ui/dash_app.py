@@ -317,6 +317,7 @@ class DashApp:
                         dbc.CardHeader("Sensores"),
                         dbc.CardBody(
                             [
+                                html.Div(id="network-summary", className="mb-3"),
                                 dbc.Row(
                                     [
                                         dbc.Col(
@@ -374,6 +375,75 @@ class DashApp:
                                     className="g-2 flex-wrap",
                                 ),
                                 html.Div(id="network-content", className="mt-3"),
+                            ]
+                        ),
+                    ],
+                    className="mb-4 shadow-sm",
+                ),
+                dbc.Card(
+                    [
+                        dbc.CardHeader("Configuración de nodos"),
+                        dbc.CardBody(
+                            [
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                dbc.Label("Sensor"),
+                                                dcc.Dropdown(
+                                                    id="config-sensor",
+                                                    options=stay_options,
+                                                    placeholder="Selecciona sensor",
+                                                ),
+                                            ],
+                                            md=4,
+                                        ),
+                                        dbc.Col(
+                                            [
+                                                dbc.Label("Frecuencia (Hz)"),
+                                                dbc.Input(
+                                                    id="config-sample-rate",
+                                                    type="number",
+                                                    min=0.1,
+                                                    step=0.1,
+                                                    placeholder="Ej. 128",
+                                                ),
+                                            ],
+                                            md=4,
+                                        ),
+                                        dbc.Col(
+                                            [
+                                                dbc.Label("Canales"),
+                                                dbc.Checklist(
+                                                    id="config-axes",
+                                                    options=[
+                                                        {"label": "X", "value": "x"},
+                                                        {"label": "Y", "value": "y"},
+                                                        {"label": "Z", "value": "z"},
+                                                    ],
+                                                    value=["x", "y", "z"],
+                                                    switch=True,
+                                                ),
+                                            ],
+                                            md=4,
+                                        ),
+                                    ],
+                                    className="g-3",
+                                ),
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            dbc.Button(
+                                                "Aplicar configuración",
+                                                id="btn-apply-config",
+                                                color="primary",
+                                            ),
+                                            width="auto",
+                                        ),
+                                    ],
+                                    className="g-2 mt-2",
+                                ),
+                                html.Div(id="config-feedback", className="mt-3"),
                             ]
                         ),
                     ],
@@ -853,6 +923,60 @@ class DashApp:
                 feedback = dbc.Alert(str(exc), color="danger", dismissable=True)
             badge = components.gateway_status_badge(status)
             return feedback, badge
+
+        @app.callback(
+            Output("config-feedback", "children"),
+            Output("config-sample-rate", "value"),
+            Output("config-axes", "value"),
+            Input("config-sensor", "value"),
+            Input("btn-apply-config", "n_clicks"),
+            State("config-sample-rate", "value"),
+            State("config-axes", "value"),
+            prevent_initial_call=True,
+        )
+        def handle_configuration(sensor_id, apply_clicks, sample_rate, axes):
+            triggered = (
+                callback_context.triggered[0]["prop_id"].split(".")[0]
+                if callback_context.triggered
+                else ""
+            )
+            if triggered == "config-sensor":
+                if not sensor_id:
+                    return dash.no_update, None, []
+                state = self.manager.sensors.get(sensor_id)
+                if state is None:
+                    return dash.no_update, None, []
+                return dash.no_update, state.info.sample_rate_hz, list(state.info.axes)
+            if triggered == "btn-apply-config":
+                if not sensor_id:
+                    alert = dbc.Alert(
+                        "Selecciona un sensor antes de aplicar la configuración",
+                        color="warning",
+                        dismissable=True,
+                    )
+                    return alert, sample_rate, axes
+                try:
+                    sr_value = float(sample_rate) if sample_rate is not None else None
+                    if sr_value is None or sr_value <= 0:
+                        raise ValueError("La frecuencia debe ser mayor a 0")
+                    axes_list = list(axes or [])
+                    if not axes_list:
+                        raise ValueError("Selecciona al menos un canal")
+                    self.manager.configure(sensor_id, sr_value, axes_list)
+                    alert = dbc.Alert(
+                        "Configuración aplicada correctamente",
+                        color="success",
+                        dismissable=True,
+                    )
+                    state = self.manager.sensors.get(sensor_id)
+                    if state is not None:
+                        return alert, state.info.sample_rate_hz, list(state.info.axes)
+                    return alert, sr_value, axes_list
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.exception("Error al configurar nodo")
+                    alert = dbc.Alert(str(exc), color="danger", dismissable=True)
+                    return alert, sample_rate, axes
+            return dash.no_update, sample_rate, axes
 
         @app.callback(
             Output("history-status", "children"),
