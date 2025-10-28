@@ -52,12 +52,15 @@ class FrequencyEstimator:
         self.fs = fs
 
     def power_spectral_density(self, data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        nperseg = self.welch_config.nperseg or min(len(data), int(self.fs * 4))
+        requested_nperseg = self.welch_config.nperseg or int(self.fs * 4)
+        nperseg = min(requested_nperseg, len(data))
         if nperseg < 8:
             raise ValueError("nperseg too small for PSD estimation")
         noverlap = self.welch_config.noverlap
         if noverlap is None:
             noverlap = nperseg // 2
+        else:
+            noverlap = max(0, min(noverlap, nperseg - 1))
         freqs, psd = signal.welch(
             data,
             fs=self.fs,
