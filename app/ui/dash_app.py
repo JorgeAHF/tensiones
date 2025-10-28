@@ -858,7 +858,8 @@ class DashApp:
             State("history-sensor", "value"),
         )
         def update_network(_, __, realtime_value, history_value):
-            triggered = callback_context.triggered[0]["prop_id"] if callback_context.triggered else ""
+            triggered_list = callback_context.triggered or []
+            triggered = triggered_list[0]["prop_id"] if triggered_list else ""
             if "btn-discover" in triggered:
                 states = self.manager.discover()
             else:
@@ -899,7 +900,8 @@ class DashApp:
             prevent_initial_call=True,
         )
         def control_gateway(connect_clicks, disconnect_clicks, host, port):
-            triggered = callback_context.triggered[0]["prop_id"].split(".")[0] if callback_context.triggered else ""
+            triggered_list = callback_context.triggered or []
+            triggered = triggered_list[0]["prop_id"].split(".")[0] if triggered_list else ""
             status = self.manager.get_gateway_status()
             feedback = dash.no_update
             try:
@@ -937,11 +939,8 @@ class DashApp:
             prevent_initial_call=True,
         )
         def handle_configuration(sensor_id, apply_clicks, sample_rate, axes):
-            triggered = (
-                callback_context.triggered[0]["prop_id"].split(".")[0]
-                if callback_context.triggered
-                else ""
-            )
+            triggered_list = callback_context.triggered or []
+            triggered = triggered_list[0]["prop_id"].split(".")[0] if triggered_list else ""
             if triggered == "config-sensor":
                 if not sensor_id:
                     return dash.no_update, None, []
@@ -1208,7 +1207,8 @@ class DashApp:
             State("sensor-selector", "value"),
         )
         def control_streams(start_all, stop_all, start_sensor, stop_sensor, sensor_value):
-            triggered = callback_context.triggered[0]["prop_id"] if callback_context.triggered else ""
+            triggered_list = callback_context.triggered or []
+            triggered = triggered_list[0]["prop_id"] if triggered_list else ""
             if "btn-start-all" in triggered:
                 self.manager.start_all()
             elif "btn-stop-all" in triggered:
