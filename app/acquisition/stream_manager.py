@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -12,7 +11,7 @@ from typing import Deque, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
-from app.acquisition.mscl_client import MSCLClient, Sample, SensorInfo
+from app.acquisition.mscl_client import GatewayStatus, MSCLClient, Sample, SensorInfo
 from app.analysis.filters import BandpassConfig, preprocess
 from app.analysis.spectral import FrequencyEstimator, PeakDetectionResult, WelchConfig
 from app.analysis.tension import TensionResult, estimate_tension
@@ -53,7 +52,7 @@ class AccelerationRecord:
 class AnalysisState:
     last_result: Optional[PeakDetectionResult] = None
     last_tension: Optional[TensionResult] = None
-    history: Deque[Tuple[float, TensionResult, QualityAssessment]] = field(
+    history: Deque[Tuple[datetime, TensionResult, QualityAssessment]] = field(
         default_factory=lambda: deque(maxlen=500)
     )
     recent_accel: Deque[AccelerationRecord] = field(
@@ -66,7 +65,7 @@ class RealtimeDataStore:
     """Thread-safe storage for UI consumption."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._analysis: Dict[str, AnalysisState] = {}
 
     def ensure_sensor(self, sensor_id: str) -> AnalysisState:
@@ -83,7 +82,7 @@ class RealtimeDataStore:
         result: PeakDetectionResult,
         tension: TensionResult,
         qa: QualityAssessment,
-        timestamp: float,
+        timestamp: datetime,
         psd: Tuple[np.ndarray, np.ndarray],
         accel: AccelerationRecord,
     ) -> None:
@@ -151,6 +150,17 @@ class StreamManager:
         self.guided_f1: Dict[str, Optional[float]] = {}
         self.guided_tol: Dict[str, float] = {}
         self._lock = threading.Lock()
+        try:
+            self._gateway_status = self.client.gateway_status()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to obtain initial gateway status: %s", exc)
+            self._gateway_status = GatewayStatus(host=None, port=None, connected=False, message=str(exc))
+        else:
+            if self._gateway_status.connected:
+                try:
+                    self.discover()
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("Initial discovery failed: %s", exc)
         self._accel_writer = self._create_writer("acceleration", [
             "timestamp_local",
             "timestamp_utc",
@@ -221,6 +231,15 @@ class StreamManager:
         )
 
     def discover(self) -> List[SensorState]:
+        try:
+            self._gateway_status = self.client.gateway_status()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to refresh gateway status before discovery: %s", exc)
+            self._gateway_status = GatewayStatus(host=None, port=None, connected=False, message=str(exc))
+
+        if not self._gateway_status.connected:
+            logger.warning("Gateway not connected; discovery skipped")
+            return []
         nodes = self.client.list_nodes()
         states = []
         for info in nodes:
@@ -232,10 +251,17 @@ class StreamManager:
         return states
 
     def configure(self, sensor_id: str, sample_rate: float, axes: Iterable[str]) -> None:
+        if not self._gateway_status.connected:
+            logger.warning("Cannot configure sensor %s without gateway connection", sensor_id)
+            return
         self.client.configure_node(sensor_id, sample_rate, axes)
         stay = self.stays.get(sensor_id)
         if stay is None:
             return
+        state = self.sensors.get(sensor_id)
+        if state is not None:
+            state.info.sample_rate_hz = sample_rate
+            state.info.axes = list(axes)
         buffer = self.buffers.get(sensor_id)
         if buffer is None:
             buffer = SensorBuffer(self.analysis_cfg["window_sec"], sample_rate)
@@ -248,14 +274,32 @@ class StreamManager:
         self.guided_tol.setdefault(sensor_id, 0.1)
 
     def start(self, sensor_id: str) -> None:
+        try:
+            self._gateway_status = self.client.gateway_status()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to refresh gateway status before starting %s: %s", sensor_id, exc)
+            self._gateway_status = GatewayStatus(host=None, port=None, connected=False, message=str(exc))
+
+        if not self._gateway_status.connected:
+            logger.warning("Cannot start sensor %s without gateway connection", sensor_id)
+            return
         stay = self.stays.get(sensor_id)
         if stay is None:
             logger.warning("Cannot start unknown sensor %s", sensor_id)
             return
         state = self.sensors.get(sensor_id)
         if state is None:
-            logger.warning("Sensor %s not discovered", sensor_id)
-            return
+            logger.debug(
+                "Sensor %s missing from cache, triggering discovery before start", sensor_id
+            )
+            try:
+                self.discover()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Discovery failed when starting %s: %s", sensor_id, exc)
+            state = self.sensors.get(sensor_id)
+            if state is None:
+                logger.warning("Sensor %s not discovered", sensor_id)
+                return
         buffer = self.buffers.get(sensor_id)
         if buffer is None:
             self.configure(sensor_id, state.info.sample_rate_hz, state.info.axes)
@@ -349,12 +393,13 @@ class StreamManager:
         )
 
         qa = result.quality
+        window_end_dt = datetime.fromtimestamp(sample.timestamp, tz=DEFAULT_TZ)
         self.realtime_store.update_analysis(
             sensor_id,
             result,
             tension,
             qa,
-            time.time(),
+            window_end_dt,
             (freqs, psd),
             AccelerationRecord(timestamps=ts_arr, samples=samples),
         )
@@ -377,6 +422,42 @@ class StreamManager:
             qa.flag.value,
         ]
         self._tension_writer.writerow(tension_row)
+
+    def connect_gateway(self, host: str, port: int) -> GatewayStatus:
+        logger.info("Connecting to gateway at %s:%s", host, port)
+        try:
+            status = self.client.connect_gateway(host, port)
+        except Exception as exc:
+            logger.exception("Gateway connection raised an exception")
+            status = GatewayStatus(host=host, port=port, connected=False, message=str(exc))
+        self._gateway_status = status
+        if status.connected:
+            logger.info("Gateway connected, starting discovery")
+            try:
+                self.discover()
+            except Exception as exc:
+                logger.exception("Failed to discover sensors after connection")
+                self._gateway_status = GatewayStatus(
+                    host=status.host,
+                    port=status.port,
+                    connected=status.connected,
+                    message=f"Conectado con errores: {exc}",
+                )
+        else:
+            logger.warning(
+                "Gateway connection failed for %s:%s -> %s", host, port, status.message
+            )
+        return self._gateway_status
+
+    def disconnect_gateway(self) -> GatewayStatus:
+        status = self.client.disconnect_gateway()
+        self._gateway_status = status
+        for state in self.sensors.values():
+            state.streaming = False
+        return status
+
+    def get_gateway_status(self) -> GatewayStatus:
+        return self._gateway_status
 
     def set_mode(self, sensor_id: str, mode: str, guided_f1: Optional[float], tolerance: float) -> None:
         self.mode[sensor_id] = mode

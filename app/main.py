@@ -9,7 +9,12 @@ from typing import Dict, List
 import yaml
 import mscl  # ← AGREGAR ESTA LÍNEA
 
-from app.acquisition.mscl_client import DemoMSCLClient, MSCLClient, create_demo_client
+from app.acquisition.mscl_client import (
+    DemoMSCLClient,
+    HttpMSCLClient,
+    MSCLClient,
+    create_demo_client,
+)
 from app.acquisition.stream_manager import RealtimeDataStore, StayDefinition, StreamManager
 from app.ui.dash_app import DashApp
 from app.utils.logging_setup import configure_logging
@@ -106,6 +111,8 @@ def main() -> None:
     stays_cfg = load_yaml(args.stays)
     stays = build_stays(stays_cfg)
 
+    demo_mode = app_config.get("modes", {}).get("demo", True)
+
     storage_base = Path(app_config.get("storage", {}).get("base_dir", "./data")).resolve()
     storage_base.mkdir(parents=True, exist_ok=True)
 
@@ -122,7 +129,25 @@ def main() -> None:
         storage_base=storage_base,
         realtime_store=realtime_store,
     )
-    manager.discover()
+    gateway_cfg = app_config.get("mscl_gateway", {})
+    if gateway_cfg.get("auto_connect", False):
+        host = gateway_cfg.get("host", "127.0.0.1")
+        port = int(gateway_cfg.get("port", 5000))
+        try:
+            status = manager.connect_gateway(host, port)
+            if not status.connected:
+                LOGGER.warning("Gateway auto-connect reported disconnected: %s", status.message)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            LOGGER.warning("Failed to auto-connect to gateway %s:%s -> %s", host, port, exc)
+
+    if demo_mode and manager.get_gateway_status().connected:
+        try:
+            if not manager.get_status():
+                manager.discover()
+            manager.start_all()
+            LOGGER.info("Demo mode enabled: auto-started streaming for all sensors")
+        except Exception as exc:  # pragma: no cover - defensive logging
+            LOGGER.warning("Failed to auto-start demo streams: %s", exc)
 
     dash_app = DashApp(
         manager=manager,

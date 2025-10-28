@@ -8,6 +8,7 @@ Plataforma integral en Python para adquirir aceleraciones de nodos MicroStrain (
 - Adquisición continua XYZ, buffers deslizantes y reconexión automática.
 - Procesamiento espectral configurable (filtros, Welch, modo AUTO/GUIADO, armónicos, QA).
 - Estimación de tensión usando coeficientes K o parámetros físicos opcionales.
+- Gestión de gateway MSCL por TCP/IP con control de conexión desde la UI.
 - UI en Dash con pestañas para red, monitoreo en tiempo real, histórico y configuración.
 - Registro de CSV para aceleración y tensión con rotación por tiempo o tamaño.
 - Configuraciones persistentes en `app/config/app.yaml` y `app/config/stays.yaml`.
@@ -44,7 +45,7 @@ mscl-tension-platform/
 
 ## Configuración
 
-- `app/config/app.yaml`: parámetros globales (Fs por defecto, análisis, filtros, almacenamiento, UI, modo demo).
+- `app/config/app.yaml`: parámetros globales (Fs por defecto, análisis, filtros, almacenamiento, UI, modo demo, gateway).
 - `app/config/stays.yaml`: mapeo `stay_id ↔ sensor_id`, coeficientes K y límites de semáforo.
 
 Puede editar estos valores desde la pestaña **Configuración** de la UI y guardar para persistir los cambios.
@@ -60,6 +61,21 @@ python -m app.main
 ```
 
 La aplicación levanta un servidor Dash en `http://0.0.0.0:8050`.
+
+### Conexión a gateway MSCL
+
+- Por defecto el modo demo auto-conecta contra un gateway simulado según `mscl_gateway` en `app.yaml`.
+- En hardware real, ingrese IP/puerto del gateway inalámbrico en la pestaña **Red** y pulse **Conectar**. El estado se refleja en un badge y, al conectarse, la plataforma descubre los nodos disponibles.
+- Si desea preconfigurar la conexión, edite en `app/config/app.yaml`:
+
+```yaml
+mscl_gateway:
+  host: "192.168.0.10"
+  port: 5000
+  auto_connect: true
+```
+
+Defina `auto_connect: false` si prefiere iniciar manualmente la sesión desde la UI.
 
 ### Argumentos opcionales
 
@@ -82,6 +98,14 @@ Ejecutar pytest desde la raíz del proyecto:
 
 ```bash
 pytest
+```
+
+Esto incluye las pruebas sintéticas de `StreamManager` ubicadas en `tests/test_stream_manager.py`,
+las cuales generan señales con distintos niveles de calidad (buena SNR, sin pico e inestabilidad)
+para verificar tensiones, banderas de QA y la escritura de CSV. Puede ejecutarlas de forma aislada con:
+
+```bash
+pytest tests/test_stream_manager.py
 ```
 
 ## Notas

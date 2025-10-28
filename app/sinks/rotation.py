@@ -41,7 +41,7 @@ class RotatingFile:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def _next_path(self) -> Path:
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
         filename = f"{self.prefix}_{timestamp}.csv"
         return self.base_dir / filename
 
