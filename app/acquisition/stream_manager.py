@@ -155,6 +155,12 @@ class StreamManager:
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("Failed to obtain initial gateway status: %s", exc)
             self._gateway_status = GatewayStatus(host=None, port=None, connected=False, message=str(exc))
+        else:
+            if self._gateway_status.connected:
+                try:
+                    self.discover()
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("Initial discovery failed: %s", exc)
         self._accel_writer = self._create_writer("acceleration", [
             "timestamp_local",
             "timestamp_utc",
@@ -181,11 +187,6 @@ class StreamManager:
             "k_used",
             "qa",
         ])
-        if self._gateway_status.connected:
-            try:
-                self.discover()
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.exception("Failed to discover sensors with initial gateway connection")
 
     def _create_writer(self, subdir: str, headers: List[str]) -> RotatingCsvWriter:
         policy = RotationPolicy(
@@ -230,6 +231,12 @@ class StreamManager:
         )
 
     def discover(self) -> List[SensorState]:
+        try:
+            self._gateway_status = self.client.gateway_status()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to refresh gateway status before discovery: %s", exc)
+            self._gateway_status = GatewayStatus(host=None, port=None, connected=False, message=str(exc))
+
         if not self._gateway_status.connected:
             logger.warning("Gateway not connected; discovery skipped")
             return []
@@ -267,6 +274,12 @@ class StreamManager:
         self.guided_tol.setdefault(sensor_id, 0.1)
 
     def start(self, sensor_id: str) -> None:
+        try:
+            self._gateway_status = self.client.gateway_status()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to refresh gateway status before starting %s: %s", sensor_id, exc)
+            self._gateway_status = GatewayStatus(host=None, port=None, connected=False, message=str(exc))
+
         if not self._gateway_status.connected:
             logger.warning("Cannot start sensor %s without gateway connection", sensor_id)
             return
@@ -276,8 +289,17 @@ class StreamManager:
             return
         state = self.sensors.get(sensor_id)
         if state is None:
-            logger.warning("Sensor %s not discovered", sensor_id)
-            return
+            logger.debug(
+                "Sensor %s missing from cache, triggering discovery before start", sensor_id
+            )
+            try:
+                self.discover()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Discovery failed when starting %s: %s", sensor_id, exc)
+            state = self.sensors.get(sensor_id)
+            if state is None:
+                logger.warning("Sensor %s not discovered", sensor_id)
+                return
         buffer = self.buffers.get(sensor_id)
         if buffer is None:
             self.configure(sensor_id, state.info.sample_rate_hz, state.info.axes)
