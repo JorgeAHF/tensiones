@@ -8,7 +8,12 @@ from typing import Dict, List
 
 import yaml
 
-from app.acquisition.mscl_client import DemoMSCLClient, MSCLClient, create_demo_client
+from app.acquisition.mscl_client import (
+    DemoMSCLClient,
+    HttpMSCLClient,
+    MSCLClient,
+    create_demo_client,
+)
 from app.acquisition.stream_manager import RealtimeDataStore, StayDefinition, StreamManager
 from app.ui.dash_app import DashApp
 from app.utils.logging_setup import configure_logging
@@ -50,8 +55,20 @@ def create_client(app_config: Dict, stays: List[StayDefinition]) -> MSCLClient:
             {"sensor_id": stay.sensor_id, "stay_id": stay.stay_id} for stay in stays
         ]
         return create_demo_client(stays_config, default_fs)
-    raise NotImplementedError(
-        "Real MSCL client not implemented in this environment. Configure demo mode."
+    gateway_cfg = app_config.get("mscl_gateway", {})
+    host = gateway_cfg.get("host", "127.0.0.1")
+    port = int(gateway_cfg.get("port", 5500))
+    return HttpMSCLClient(
+        host=host,
+        port=port,
+        base_path=gateway_cfg.get("base_path", "/api/mscl"),
+        username=gateway_cfg.get("username"),
+        password=gateway_cfg.get("password"),
+        use_ssl=bool(gateway_cfg.get("use_ssl", False)),
+        request_timeout=float(gateway_cfg.get("timeout", 5.0)),
+        max_retries=int(gateway_cfg.get("max_retries", 3)),
+        reconnect_backoff=float(gateway_cfg.get("reconnect_backoff", 1.0)),
+        poll_interval=float(gateway_cfg.get("poll_interval", 0.5)),
     )
 
 
