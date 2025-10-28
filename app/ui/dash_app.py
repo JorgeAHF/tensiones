@@ -1329,7 +1329,6 @@ class DashApp:
         def update_accelerometer(_, sensor_id, window_sec):
             """Actualiza las gráficas del acelerómetro en tiempo real."""
             import numpy as np
-            from collections import deque
             
             # Valores por defecto
             window_sec = window_sec or 10
@@ -1344,17 +1343,32 @@ class DashApp:
                 status = dbc.Badge("Sin sensor", color="secondary")
                 return empty_fig, empty_fig, empty_fig, status
             
-            # Obtener datos del realtime store
-            buffer = self.realtime.get(sensor_id)
+            # Obtener estado del análisis desde el realtime store
+            snapshot = self.realtime.snapshot()
+            analysis_state = snapshot.get(sensor_id)
             
-            if buffer is None or len(buffer) == 0:
+            if analysis_state is None or len(analysis_state.recent_accel) == 0:
                 # Sin datos disponibles
+                sensor_state = self.manager.sensors.get(sensor_id)
+                is_streaming = sensor_state.streaming if sensor_state else False
+                
                 empty_fig = go.Figure()
-                empty_fig.update_layout(
-                    title="Esperando datos...",
-                    template="plotly_white",
-                )
-                status = dbc.Badge("Sin datos", color="warning")
+                if is_streaming:
+                    empty_fig.update_layout(
+                        title="Esperando datos...",
+                        xaxis_title="Tiempo (s)",
+                        yaxis_title="Aceleración (g)",
+                        template="plotly_white",
+                    )
+                    status = dbc.Badge("Streaming activo - Esperando datos...", color="warning")
+                else:
+                    empty_fig.update_layout(
+                        title="Inicie el streaming desde la pestaña Red",
+                        xaxis_title="Tiempo (s)",
+                        yaxis_title="Aceleración (g)",
+                        template="plotly_white",
+                    )
+                    status = dbc.Badge("Sin streaming - Inicie desde pestaña Red", color="danger")
                 return empty_fig, empty_fig, empty_fig, status
             
             # Obtener información del sensor
@@ -1368,52 +1382,46 @@ class DashApp:
                 status = dbc.Badge("Sensor no encontrado", color="danger")
                 return empty_fig, empty_fig, empty_fig, status
             
-            fs_hz = sensor_state.fs_hz
             is_streaming = sensor_state.streaming
             
-            # Calcular cuántas muestras necesitamos
-            n_samples = int(window_sec * fs_hz)
-            
-            # Obtener los últimos n_samples del buffer
-            recent_data = list(buffer)[-n_samples:] if len(buffer) > n_samples else list(buffer)
-            
-            if len(recent_data) == 0:
-                empty_fig = go.Figure()
-                empty_fig.update_layout(
-                    title="Sin datos recientes",
-                    template="plotly_white",
-                )
-                status = dbc.Badge("Sin datos recientes", color="warning")
-                return empty_fig, empty_fig, empty_fig, status
-            
-            # Extraer datos de aceleración (asumiendo que cada elemento tiene acceleration_g)
             try:
-                # Crear arrays para cada eje
-                x_data = []
-                y_data = []
-                z_data = []
-                timestamps = []
+                # Obtener el registro de aceleración más reciente
+                latest_accel = analysis_state.recent_accel[-1]
                 
-                for i, sample in enumerate(recent_data):
-                    # El tiempo relativo en segundos desde el inicio de la ventana
-                    t = i / fs_hz
-                    timestamps.append(t)
-                    
-                    # Extraer aceleración (asumiendo formato [x, y, z])
-                    if hasattr(sample, 'acceleration_g') and len(sample.acceleration_g) >= 3:
-                        x_data.append(sample.acceleration_g[0])
-                        y_data.append(sample.acceleration_g[1])
-                        z_data.append(sample.acceleration_g[2])
-                    else:
-                        # Si no hay datos de aceleración, usar 0
-                        x_data.append(0)
-                        y_data.append(0)
-                        z_data.append(0)
+                # Extraer datos
+                timestamps = latest_accel.timestamps
+                samples = latest_accel.samples  # Shape: (n_samples, 3) para [x, y, z]
+                
+                # Calcular tiempos relativos
+                if len(timestamps) > 0:
+                    time_offset = timestamps[0]
+                    times = timestamps - time_offset
+                else:
+                    times = np.array([])
+                
+                # Extraer cada eje
+                if samples.ndim == 2 and samples.shape[1] >= 3:
+                    x_data = samples[:, 0]
+                    y_data = samples[:, 1]
+                    z_data = samples[:, 2]
+                else:
+                    # Si no hay datos con forma correcta, usar ceros
+                    x_data = np.zeros(len(times))
+                    y_data = np.zeros(len(times))
+                    z_data = np.zeros(len(times))
+                
+                # Limitar a la ventana de tiempo solicitada
+                if len(times) > 0:
+                    mask = times <= window_sec
+                    times = times[mask]
+                    x_data = x_data[mask]
+                    y_data = y_data[mask]
+                    z_data = z_data[mask]
                 
                 # Crear gráficas
                 fig_x = go.Figure()
                 fig_x.add_trace(go.Scatter(
-                    x=timestamps,
+                    x=times,
                     y=x_data,
                     mode='lines',
                     name='Eje X',
@@ -1430,7 +1438,7 @@ class DashApp:
                 
                 fig_y = go.Figure()
                 fig_y.add_trace(go.Scatter(
-                    x=timestamps,
+                    x=times,
                     y=y_data,
                     mode='lines',
                     name='Eje Y',
@@ -1447,7 +1455,7 @@ class DashApp:
                 
                 fig_z = go.Figure()
                 fig_z.add_trace(go.Scatter(
-                    x=timestamps,
+                    x=times,
                     y=z_data,
                     mode='lines',
                     name='Eje Z',
@@ -1465,12 +1473,12 @@ class DashApp:
                 # Estado
                 if is_streaming:
                     status = dbc.Badge(
-                        f"Streaming activo - {len(recent_data)} muestras - {fs_hz} Hz",
+                        f"✓ Streaming activo - {len(times)} muestras - {sensor_state.info.sample_rate_hz:.0f} Hz",
                         color="success"
                     )
                 else:
                     status = dbc.Badge(
-                        f"Sin streaming - {len(recent_data)} muestras",
+                        f"Streaming detenido - Última ventana: {len(times)} muestras",
                         color="warning"
                     )
                 
