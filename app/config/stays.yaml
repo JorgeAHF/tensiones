@@ -1,15 +1,8 @@
 stays:
-  - stay_id: "T14-I-CUE"
-    sensor_id: "ACC-01"
-    k_coefficient_N_per_Hz2: 24300.0
-    thresholds_kN:
-      green_max: 250
-      yellow_max: 300
-      orange_max: 350
-  - stay_id: "T13-I-CUE"
-    sensor_id: "ACC-02"
-    k_coefficient_N_per_Hz2: 21000.0
-    thresholds_kN:
-      green_max: 230
-      yellow_max: 280
-      orange_max: 330
+- k_coefficient_N_per_Hz2: 1.0
+  sensor_id: 10603
+  stay_id: sensor_1
+  thresholds_kN:
+    green_max: 100.0
+    orange_max: 200.0
+    yellow_max: 150.0

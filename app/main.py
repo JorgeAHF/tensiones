@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import yaml
+import mscl  # ← AGREGAR ESTA LÍNEA
 
 from app.acquisition.mscl_client import DemoMSCLClient, MSCLClient, create_demo_client
 from app.acquisition.stream_manager import RealtimeDataStore, StayDefinition, StreamManager
@@ -45,14 +46,39 @@ def build_stays(stays_cfg: Dict) -> List[StayDefinition]:
 def create_client(app_config: Dict, stays: List[StayDefinition]) -> MSCLClient:
     default_fs = float(app_config.get("default_fs_hz", 256))
     demo_mode = app_config.get("modes", {}).get("demo", True)
+    
     if demo_mode:
+        LOGGER.info("Running in DEMO mode")
         stays_config = [
             {"sensor_id": stay.sensor_id, "stay_id": stay.stay_id} for stay in stays
         ]
         return create_demo_client(stays_config, default_fs)
-    raise NotImplementedError(
-        "Real MSCL client not implemented in this environment. Configure demo mode."
-    )
+    else:
+        LOGGER.info("Connecting to real MSCL Gateway at 192.168.8.101:5000")
+        try:
+            from app.acquisition.real_mscl_client import RealMSCLClient  # ← AGREGAR
+            
+            connection = mscl.Connection.TcpIp("192.168.8.101", 5000)
+            base_station = mscl.BaseStation(connection)
+            
+            # Ping para verificar conexión
+            if base_station.ping():
+                LOGGER.info("Successfully connected to BaseStation")
+            else:
+                LOGGER.error("BaseStation ping failed")
+            
+            # Crear configuración de sensores
+            sensor_configs = [
+                {"sensor_id": stay.sensor_id, "stay_id": stay.stay_id} 
+                for stay in stays
+            ]
+            
+            # Crear y retornar cliente real
+            return RealMSCLClient(base_station, sensor_configs, default_fs)
+            
+        except Exception as e:
+            LOGGER.error(f"Failed to connect to Gateway: {e}")
+            raise
 
 
 def parse_args() -> argparse.Namespace:

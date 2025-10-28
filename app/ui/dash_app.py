@@ -472,7 +472,7 @@ class DashApp:
             return sensor_value
 
     def run(self, host: str = "0.0.0.0", port: int = 8050) -> None:
-        self.dash_app.run_server(host=host, port=port)
+        self.dash_app.run(host=host, port=port)
 
 
 __all__ = ["DashApp"]
