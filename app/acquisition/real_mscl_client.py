@@ -39,13 +39,29 @@ class RealMSCLClient(MSCLClient):
                 node_id_int = int(sensor_id)
                 node = mscl.WirelessNode(node_id_int, self.base_station)
                 
-                # Ping node
-                ping_response = node.ping()
-                if ping_response.success():
-                    rssi = ping_response.nodeRssi()
-                    LOGGER.info(f"Node {sensor_id} connected (RSSI Base: {ping_response.baseRssi()}, Node: {rssi})")
-                    self.nodes[sensor_id] = node
-                    
+                # Wait a moment for node to be ready
+                time.sleep(0.5)
+                
+                # Ping node with retries
+                ping_success = False
+                for attempt in range(3):
+                    try:
+                        LOGGER.info(f"Ping attempt {attempt + 1}/3 for node {sensor_id}...")
+                        ping_response = node.ping()
+                        # Ping completed without exception = success
+                        rssi_base = ping_response.baseRssi()
+                        rssi_node = ping_response.nodeRssi()
+                        LOGGER.info(f"Node {sensor_id} connected (RSSI Base: {rssi_base}, Node: {rssi_node})")
+                        self.nodes[sensor_id] = node
+                        ping_success = True
+                        break
+                    except Exception as ping_error:
+                        LOGGER.warning(f"Ping attempt {attempt + 1} failed for node {sensor_id}: {ping_error}")
+                        if attempt < 2:
+                            LOGGER.info(f"Retrying in 1 second...")
+                            time.sleep(1)
+                
+                if ping_success:
                     # Create SensorInfo
                     sensor_info = SensorInfo(
                         sensor_id=sensor_id,

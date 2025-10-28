@@ -34,7 +34,7 @@ def build_stays(stays_cfg: Dict) -> List[StayDefinition]:
         thresholds_cfg = entry.get("thresholds_kN", {})
         stay = StayDefinition(
             stay_id=entry["stay_id"],
-            sensor_id=entry["sensor_id"],
+            sensor_id=str(entry["sensor_id"]),  # Convert to string for consistency
             k_coefficient=float(entry.get("k_coefficient_N_per_Hz2", 0.0)),
             thresholds=Thresholds(
                 green_max=float(thresholds_cfg.get("green_max", 0)),
