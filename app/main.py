@@ -140,14 +140,15 @@ def main() -> None:
         except Exception as exc:  # pragma: no cover - defensive logging
             LOGGER.warning("Failed to auto-connect to gateway %s:%s -> %s", host, port, exc)
 
-    if demo_mode and manager.get_gateway_status().connected:
+    if manager.get_gateway_status().connected:
         try:
             if not manager.get_status():
                 manager.discover()
             manager.start_all()
-            LOGGER.info("Demo mode enabled: auto-started streaming for all sensors")
+            mode_label = "Demo" if demo_mode else "Real hardware"
+            LOGGER.info("%s mode enabled: auto-started streaming for all sensors", mode_label)
         except Exception as exc:  # pragma: no cover - defensive logging
-            LOGGER.warning("Failed to auto-start demo streams: %s", exc)
+            LOGGER.warning("Failed to auto-start streams: %s", exc)
 
     dash_app = DashApp(
         manager=manager,
