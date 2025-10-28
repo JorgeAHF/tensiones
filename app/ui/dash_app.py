@@ -833,55 +833,15 @@ class DashApp:
             children=[
                 dbc.Card(
                     [
-                        dbc.CardHeader("Datos del Acelerómetro en Tiempo Real"),
+                        dbc.CardHeader("Datos del Acelerómetro en Tiempo Real - Sensor 10603"),
                         dbc.CardBody(
                             [
                                 dbc.Row(
                                     [
                                         dbc.Col(
                                             [
-                                                dbc.Label("Seleccionar Sensor"),
-                                                dcc.Dropdown(
-                                                    id="accel-sensor-selector",
-                                                    options=stay_options,
-                                                    value=stay_options[0]["value"] if stay_options else None,
-                                                ),
-                                            ],
-                                            md=4,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                dbc.Label("Ventana de tiempo (segundos)"),
-                                                dcc.Input(
-                                                    id="accel-window",
-                                                    type="number",
-                                                    value=10,
-                                                    min=1,
-                                                    max=60,
-                                                ),
-                                            ],
-                                            md=4,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                dbc.Label("Estado"),
                                                 html.Div(id="accel-status", className="mt-2"),
                                             ],
-                                            md=4,
-                                        ),
-                                    ],
-                                    className="mb-3",
-                                ),
-                                dbc.Row(
-                                    [
-                                        dbc.Col(
-                                            [
-                                                dcc.Graph(
-                                                    id="accel-graph-x",
-                                                    config={"displayModeBar": False},
-                                                    style={"height": "250px"},
-                                                ),
-                                            ],
                                             md=12,
                                         ),
                                     ],
@@ -892,24 +852,9 @@ class DashApp:
                                         dbc.Col(
                                             [
                                                 dcc.Graph(
-                                                    id="accel-graph-y",
-                                                    config={"displayModeBar": False},
-                                                    style={"height": "250px"},
-                                                ),
-                                            ],
-                                            md=12,
-                                        ),
-                                    ],
-                                    className="mb-3",
-                                ),
-                                dbc.Row(
-                                    [
-                                        dbc.Col(
-                                            [
-                                                dcc.Graph(
-                                                    id="accel-graph-z",
-                                                    config={"displayModeBar": False},
-                                                    style={"height": "250px"},
+                                                    id="accel-graph-combined",
+                                                    config={"displayModeBar": True},
+                                                    style={"height": "600px"},
                                                 ),
                                             ],
                                             md=12,
@@ -1318,71 +1263,76 @@ class DashApp:
             return sensor_value
 
         @app.callback(
-            Output("accel-graph-x", "figure"),
-            Output("accel-graph-y", "figure"),
-            Output("accel-graph-z", "figure"),
+            Output("accel-graph-combined", "figure"),
             Output("accel-status", "children"),
             Input("interval", "n_intervals"),
-            State("accel-sensor-selector", "value"),
-            State("accel-window", "value"),
         )
-        def update_accelerometer(_, sensor_id, window_sec):
-            """Actualiza las gráficas del acelerómetro en tiempo real."""
+        def update_accelerometer(_):
+            """Actualiza la gráfica del acelerómetro en tiempo real - Sensor 10603."""
             import numpy as np
             
-            # Valores por defecto
-            window_sec = window_sec or 10
+            # Siempre usar sensor 10603
+            sensor_id = "10603"
             
-            if not sensor_id:
-                # Sin sensor seleccionado
+            # Obtener estado del sensor
+            sensor_state = self.manager.sensors.get(sensor_id)
+            
+            if not sensor_state:
+                # Sensor no encontrado
                 empty_fig = go.Figure()
                 empty_fig.update_layout(
-                    title="Seleccione un sensor",
+                    title="Sensor 10603 no encontrado",
                     template="plotly_white",
+                    height=600,
                 )
-                status = dbc.Badge("Sin sensor", color="secondary")
-                return empty_fig, empty_fig, empty_fig, status
+                status = dbc.Alert("⚠️ Sensor 10603 no encontrado. Ve a pestaña Red y haz clic en Discover.", color="danger")
+                return empty_fig, status
+            
+            is_streaming = sensor_state.streaming
             
             # Obtener estado del análisis desde el realtime store
             snapshot = self.realtime.snapshot()
             analysis_state = snapshot.get(sensor_id)
             
-            if analysis_state is None or len(analysis_state.recent_accel) == 0:
-                # Sin datos disponibles
-                sensor_state = self.manager.sensors.get(sensor_id)
-                is_streaming = sensor_state.streaming if sensor_state else False
-                
-                empty_fig = go.Figure()
-                if is_streaming:
-                    empty_fig.update_layout(
-                        title="Esperando datos...",
-                        xaxis_title="Tiempo (s)",
-                        yaxis_title="Aceleración (g)",
-                        template="plotly_white",
-                    )
-                    status = dbc.Badge("Streaming activo - Esperando datos...", color="warning")
-                else:
-                    empty_fig.update_layout(
-                        title="Inicie el streaming desde la pestaña Red",
-                        xaxis_title="Tiempo (s)",
-                        yaxis_title="Aceleración (g)",
-                        template="plotly_white",
-                    )
-                    status = dbc.Badge("Sin streaming - Inicie desde pestaña Red", color="danger")
-                return empty_fig, empty_fig, empty_fig, status
-            
-            # Obtener información del sensor
-            sensor_state = self.manager.sensors.get(sensor_id)
-            if not sensor_state:
+            if not is_streaming:
+                # No está haciendo streaming
                 empty_fig = go.Figure()
                 empty_fig.update_layout(
-                    title="Sensor no encontrado",
+                    title="Streaming detenido",
+                    xaxis_title="Tiempo (s)",
+                    yaxis_title="Aceleración (g)",
                     template="plotly_white",
+                    height=600,
                 )
-                status = dbc.Badge("Sensor no encontrado", color="danger")
-                return empty_fig, empty_fig, empty_fig, status
+                status = dbc.Alert(
+                    [
+                        html.H5("🔴 Streaming NO activo", className="alert-heading"),
+                        html.P("Para ver datos en tiempo real:"),
+                        html.Ol([
+                            html.Li("Ve a la pestaña 'Red'"),
+                            html.Li("Haz clic en 'Discover' para detectar sensores"),
+                            html.Li("Haz clic en 'Start All' para iniciar streaming"),
+                        ]),
+                    ],
+                    color="warning"
+                )
+                return empty_fig, status
             
-            is_streaming = sensor_state.streaming
+            if analysis_state is None or len(analysis_state.recent_accel) == 0:
+                # Streaming activo pero sin datos aún
+                empty_fig = go.Figure()
+                empty_fig.update_layout(
+                    title="⏳ Esperando datos... (puede tomar 5-10 segundos)",
+                    xaxis_title="Tiempo (s)",
+                    yaxis_title="Aceleración (g)",
+                    template="plotly_white",
+                    height=600,
+                )
+                status = dbc.Alert(
+                    "✅ Streaming ACTIVO - Esperando primera ventana de datos...",
+                    color="info"
+                )
+                return empty_fig, status
             
             try:
                 # Obtener el registro de aceleración más reciente
@@ -1405,94 +1355,86 @@ class DashApp:
                     y_data = samples[:, 1]
                     z_data = samples[:, 2]
                 else:
-                    # Si no hay datos con forma correcta, usar ceros
+                    # Si no hay datos con forma correcta, crear vacíos
                     x_data = np.zeros(len(times))
                     y_data = np.zeros(len(times))
                     z_data = np.zeros(len(times))
                 
-                # Limitar a la ventana de tiempo solicitada
-                if len(times) > 0:
-                    mask = times <= window_sec
-                    times = times[mask]
-                    x_data = x_data[mask]
-                    y_data = y_data[mask]
-                    z_data = z_data[mask]
+                # Crear gráfica combinada con los 3 ejes
+                fig = go.Figure()
                 
-                # Crear gráficas
-                fig_x = go.Figure()
-                fig_x.add_trace(go.Scatter(
+                fig.add_trace(go.Scatter(
                     x=times,
                     y=x_data,
                     mode='lines',
                     name='Eje X',
                     line=dict(color='#e74c3c', width=2),
                 ))
-                fig_x.update_layout(
-                    title="Aceleración Eje X",
-                    xaxis_title="Tiempo (s)",
-                    yaxis_title="Aceleración (g)",
-                    template="plotly_white",
-                    margin=dict(l=50, r=20, t=40, b=40),
-                    height=250,
-                )
                 
-                fig_y = go.Figure()
-                fig_y.add_trace(go.Scatter(
+                fig.add_trace(go.Scatter(
                     x=times,
                     y=y_data,
                     mode='lines',
                     name='Eje Y',
                     line=dict(color='#3498db', width=2),
                 ))
-                fig_y.update_layout(
-                    title="Aceleración Eje Y",
-                    xaxis_title="Tiempo (s)",
-                    yaxis_title="Aceleración (g)",
-                    template="plotly_white",
-                    margin=dict(l=50, r=20, t=40, b=40),
-                    height=250,
-                )
                 
-                fig_z = go.Figure()
-                fig_z.add_trace(go.Scatter(
+                fig.add_trace(go.Scatter(
                     x=times,
                     y=z_data,
                     mode='lines',
                     name='Eje Z',
                     line=dict(color='#2ecc71', width=2),
                 ))
-                fig_z.update_layout(
-                    title="Aceleración Eje Z",
+                
+                fig.update_layout(
+                    title=f"Aceleración 3 Ejes - Sensor 10603",
                     xaxis_title="Tiempo (s)",
                     yaxis_title="Aceleración (g)",
                     template="plotly_white",
-                    margin=dict(l=50, r=20, t=40, b=40),
-                    height=250,
+                    height=600,
+                    hovermode='x unified',
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    )
                 )
                 
-                # Estado
-                if is_streaming:
-                    status = dbc.Badge(
-                        f"✓ Streaming activo - {len(times)} muestras - {sensor_state.info.sample_rate_hz:.0f} Hz",
-                        color="success"
-                    )
-                else:
-                    status = dbc.Badge(
-                        f"Streaming detenido - Última ventana: {len(times)} muestras",
-                        color="warning"
-                    )
+                # Estado con información detallada
+                status = dbc.Alert(
+                    [
+                        html.H5("✅ Streaming ACTIVO", className="alert-heading"),
+                        html.P([
+                            html.Strong(f"{len(times)} muestras"),
+                            f" | Frecuencia: {sensor_state.info.sample_rate_hz:.0f} Hz",
+                            f" | Ventana: {times[-1]:.1f}s" if len(times) > 0 else "",
+                        ]),
+                    ],
+                    color="success"
+                )
                 
-                return fig_x, fig_y, fig_z, status
+                return fig, status
                 
             except Exception as e:
-                logger.error(f"Error al actualizar gráficas del acelerómetro: {e}")
+                logger.error(f"Error al actualizar gráficas del acelerómetro: {e}", exc_info=True)
                 error_fig = go.Figure()
                 error_fig.update_layout(
-                    title=f"Error: {str(e)}",
+                    title=f"❌ Error al procesar datos",
                     template="plotly_white",
+                    height=600,
                 )
-                status = dbc.Badge(f"Error: {str(e)}", color="danger")
-                return error_fig, error_fig, error_fig, status
+                status = dbc.Alert(
+                    [
+                        html.H5("❌ Error", className="alert-heading"),
+                        html.P(f"Error: {str(e)}"),
+                        html.P("Revisa los logs para más detalles."),
+                    ],
+                    color="danger"
+                )
+                return error_fig, status
 
     def run(self, host: str = "0.0.0.0", port: int = 8050) -> None:
         self.dash_app.run(host=host, port=port)
