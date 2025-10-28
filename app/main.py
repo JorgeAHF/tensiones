@@ -97,6 +97,8 @@ def main() -> None:
     stays_cfg = load_yaml(args.stays)
     stays = build_stays(stays_cfg)
 
+    demo_mode = app_config.get("modes", {}).get("demo", True)
+
     storage_base = Path(app_config.get("storage", {}).get("base_dir", "./data")).resolve()
     storage_base.mkdir(parents=True, exist_ok=True)
 
@@ -123,6 +125,15 @@ def main() -> None:
                 LOGGER.warning("Gateway auto-connect reported disconnected: %s", status.message)
         except Exception as exc:  # pragma: no cover - defensive logging
             LOGGER.warning("Failed to auto-connect to gateway %s:%s -> %s", host, port, exc)
+
+    if demo_mode and manager.get_gateway_status().connected:
+        try:
+            if not manager.get_status():
+                manager.discover()
+            manager.start_all()
+            LOGGER.info("Demo mode enabled: auto-started streaming for all sensors")
+        except Exception as exc:  # pragma: no cover - defensive logging
+            LOGGER.warning("Failed to auto-start demo streams: %s", exc)
 
     dash_app = DashApp(
         manager=manager,

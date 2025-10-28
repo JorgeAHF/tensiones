@@ -65,7 +65,7 @@ class RealtimeDataStore:
     """Thread-safe storage for UI consumption."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._analysis: Dict[str, AnalysisState] = {}
 
     def ensure_sensor(self, sensor_id: str) -> AnalysisState:
@@ -150,7 +150,11 @@ class StreamManager:
         self.guided_f1: Dict[str, Optional[float]] = {}
         self.guided_tol: Dict[str, float] = {}
         self._lock = threading.Lock()
-        self._gateway_status = GatewayStatus(host=None, port=None, connected=False)
+        try:
+            self._gateway_status = self.client.gateway_status()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to obtain initial gateway status: %s", exc)
+            self._gateway_status = GatewayStatus(host=None, port=None, connected=False, message=str(exc))
         self._accel_writer = self._create_writer("acceleration", [
             "timestamp_local",
             "timestamp_utc",
@@ -177,6 +181,11 @@ class StreamManager:
             "k_used",
             "qa",
         ])
+        if self._gateway_status.connected:
+            try:
+                self.discover()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.exception("Failed to discover sensors with initial gateway connection")
 
     def _create_writer(self, subdir: str, headers: List[str]) -> RotatingCsvWriter:
         policy = RotationPolicy(
