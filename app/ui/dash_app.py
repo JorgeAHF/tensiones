@@ -1,10 +1,11 @@
 """Dash web application wiring."""
 from __future__ import annotations
 
+import csv
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 import dash
 import dash_bootstrap_components as dbc
@@ -18,6 +19,127 @@ from app.utils.validators import Thresholds
 from app.ui import components
 
 logger = logging.getLogger(__name__)
+
+
+TENSION_CSV_HEADERS = [
+    "t_window_end_local",
+    "t_window_end_utc",
+    "stay_id",
+    "sensor_id",
+    "f1_hz",
+    "T_N",
+    "T_kN",
+    "SNR_dB",
+    "peak_prom",
+    "n_samples",
+    "fs_hz",
+    "mode",
+    "k_used",
+    "qa",
+]
+
+
+def _parse_float(value: Optional[str]) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return None
+
+
+def _parse_int(value: Optional[str]) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return None
+
+
+def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        logger.warning("No se pudo parsear timestamp: %s", value)
+        return None
+    if dt.tzinfo is None:
+        dt = DEFAULT_TZ.localize(dt)
+    else:
+        dt = dt.astimezone(DEFAULT_TZ)
+    return dt
+
+
+def _parse_date_value(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:  # pragma: no cover - defensive
+        logger.warning("Fecha inválida recibida: %s", value)
+        return None
+
+
+def load_persisted_tension(
+    storage_base: Path,
+    sensor_id: Optional[str] = None,
+    target_date: Optional[date] = None,
+) -> List[Dict[str, Any]]:
+    """Read persisted tension CSV files and return typed records."""
+
+    tension_dir = storage_base / "tension"
+    if not tension_dir.exists():
+        return []
+
+    records: List[Dict[str, Any]] = []
+    for path in sorted(tension_dir.glob("tension_*.csv")):
+        try:
+            with path.open("r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                if reader.fieldnames is None:
+                    continue
+                missing = [h for h in TENSION_CSV_HEADERS if h not in reader.fieldnames]
+                if missing:
+                    logger.warning(
+                        "Cabeceras faltantes en %s: %s", path.name, ", ".join(missing)
+                    )
+                for row in reader:
+                    if sensor_id and row.get("sensor_id") != sensor_id:
+                        continue
+                    local_ts = _parse_datetime(row.get("t_window_end_local"))
+                    utc_ts = _parse_datetime(row.get("t_window_end_utc"))
+                    if local_ts is None and utc_ts is None:
+                        continue
+                    timestamp = local_ts or utc_ts
+                    if target_date and timestamp.date() != target_date:
+                        continue
+                    record = {
+                        "t_window_end_local": timestamp,
+                        "t_window_end_utc": utc_ts,
+                        "stay_id": row.get("stay_id"),
+                        "sensor_id": row.get("sensor_id"),
+                        "f1_hz": _parse_float(row.get("f1_hz")),
+                        "T_N": _parse_float(row.get("T_N")),
+                        "T_kN": _parse_float(row.get("T_kN")),
+                        "SNR_dB": _parse_float(row.get("SNR_dB")),
+                        "peak_prom": _parse_float(row.get("peak_prom")),
+                        "n_samples": _parse_int(row.get("n_samples")),
+                        "fs_hz": _parse_float(row.get("fs_hz")),
+                        "mode": row.get("mode"),
+                        "k_used": _parse_float(row.get("k_used")),
+                        "qa": row.get("qa"),
+                    }
+                    records.append(record)
+        except FileNotFoundError:  # pragma: no cover - rotated during read
+            continue
+
+    fallback_ts = datetime.min.replace(tzinfo=DEFAULT_TZ)
+    records.sort(
+        key=lambda rec: rec["t_window_end_local"] if rec["t_window_end_local"] else fallback_ts
+    )
+    return records
 
 
 def _analysis_to_figures(analysis_state):
@@ -87,6 +209,9 @@ class DashApp:
         self.stays_config_path = stays_config_path
         self.app_config = app_config
         self.gateway_config = app_config.get("mscl_gateway", {})
+        self.storage_base = Path(
+            app_config.get("storage", {}).get("base_dir", "./data")
+        ).resolve()
         external_stylesheets = [dbc.themes.LUX]
         self.dash_app = dash.Dash(
             __name__,
@@ -101,7 +226,7 @@ class DashApp:
         stay_options = [{"label": stay.stay_id, "value": stay.sensor_id} for stay in self.stays]
         analysis_cfg = self.app_config.get("analysis", {})
         rotation_cfg = self.app_config.get("storage", {}).get("rotation", {})
-        storage_dir = self.app_config.get("storage", {}).get("base_dir", "./data")
+        storage_dir = str(self.storage_base)
         bandpass_cfg = self.manager.analysis_cfg.get("bandpass", [0.2, 10.0])
         if isinstance(bandpass_cfg, dict):
             band_low = bandpass_cfg.get("low", 0.2)
@@ -261,71 +386,95 @@ class DashApp:
             label="Tiempo real",
             tab_id="realtime",
             children=[
-                dbc.Card(
-                    [
-                        dbc.CardHeader("Controles"),
-                        dbc.CardBody(
-                            dbc.Row(
+                            dbc.Card(
                                 [
-                                    dbc.Col(
+                                    dbc.CardHeader("Controles"),
+                                    dbc.CardBody(
                                         [
-                                            dbc.Label("Sensor"),
-                                            dcc.Dropdown(
-                                                id="realtime-sensor",
-                                                options=stay_options,
-                                                placeholder="Selecciona sensor",
-                                                value=stay_options[0]["value"] if stay_options else None,
-                                                clearable=False,
-                                            ),
-                                        ],
-                                        md=4,
-                                    ),
-                                    dbc.Col(
-                                        [
-                                            dbc.Label("Modo"),
-                                            dcc.RadioItems(
-                                                id="mode-selector",
-                                                options=[
-                                                    {"label": "AUTO", "value": "AUTO"},
-                                                    {"label": "GUIADA", "value": "GUIDED"},
+                                            dbc.Row(
+                                                [
+                                                    dbc.Col(
+                                                        [
+                                                            dbc.Label("Sensor"),
+                                                            dcc.Dropdown(
+                                                                id="realtime-sensor",
+                                                                options=stay_options,
+                                                                placeholder="Selecciona sensor",
+                                                                value=stay_options[0]["value"]
+                                                                if stay_options
+                                                                else None,
+                                                                clearable=False,
+                                                            ),
+                                                        ],
+                                                        md=4,
+                                                    ),
+                                                    dbc.Col(
+                                                        [
+                                                            dbc.Label("Modo"),
+                                                            dcc.RadioItems(
+                                                                id="mode-selector",
+                                                                options=[
+                                                                    {"label": "AUTO", "value": "AUTO"},
+                                                                    {"label": "GUIADA", "value": "GUIDED"},
+                                                                ],
+                                                                value="AUTO",
+                                                                inline=True,
+                                                            ),
+                                                        ],
+                                                        md=4,
+                                                    ),
+                                                    dbc.Col(
+                                                        [
+                                                            dbc.Label("f₁ propuesta (Hz)"),
+                                                            dbc.Input(
+                                                                id="guided-f1",
+                                                                type="number",
+                                                                placeholder="Ej. 2.5",
+                                                            ),
+                                                        ],
+                                                        md=2,
+                                                    ),
+                                                    dbc.Col(
+                                                        [
+                                                            dbc.Label("Tolerancia (%)"),
+                                                            dbc.Input(
+                                                                id="guided-tol",
+                                                                type="number",
+                                                                value=10,
+                                                                min=0,
+                                                                max=100,
+                                                            ),
+                                                        ],
+                                                        md=2,
+                                                    ),
                                                 ],
-                                                value="AUTO",
-                                                inline=True,
+                                                className="g-3",
                                             ),
-                                        ],
-                                        md=4,
-                                    ),
-                                    dbc.Col(
-                                        [
-                                            dbc.Label("f₁ propuesta (Hz)"),
-                                            dbc.Input(
-                                                id="guided-f1",
-                                                type="number",
-                                                placeholder="Ej. 2.5",
+                                            dbc.Row(
+                                                [
+                                                    dbc.Col(
+                                                        [
+                                                            dbc.Label("Fecha (local)"),
+                                                            dcc.DatePickerSingle(
+                                                                id="realtime-date",
+                                                                date=datetime.now(
+                                                                    DEFAULT_TZ
+                                                                )
+                                                                .date()
+                                                                .isoformat(),
+                                                                display_format="YYYY-MM-DD",
+                                                            ),
+                                                        ],
+                                                        md=3,
+                                                    ),
+                                                ],
+                                                className="g-3 mt-1",
                                             ),
-                                        ],
-                                        md=2,
-                                    ),
-                                    dbc.Col(
-                                        [
-                                            dbc.Label("Tolerancia (%)"),
-                                            dbc.Input(
-                                                id="guided-tol",
-                                                type="number",
-                                                value=10,
-                                                min=0,
-                                                max=100,
-                                            ),
-                                        ],
-                                        md=2,
+                                        ]
                                     ),
                                 ],
-                                className="g-3",
-                            )
-                        ),
-                    ],
-                    className="mb-4 shadow-sm",
-                ),
+                                className="mb-4 shadow-sm",
+                            ),
                 html.Div(id="realtime-card", className="mb-4"),
                 dbc.Row(
                     [
@@ -391,6 +540,19 @@ class DashApp:
                                                 ),
                                             ],
                                             md=6,
+                                        ),
+                                        dbc.Col(
+                                            [
+                                                dbc.Label("Fecha (local)"),
+                                                dcc.DatePickerSingle(
+                                                    id="history-date",
+                                                    date=datetime.now(DEFAULT_TZ)
+                                                    .date()
+                                                    .isoformat(),
+                                                    display_format="YYYY-MM-DD",
+                                                ),
+                                            ],
+                                            md=3,
                                         ),
                                         dbc.Col(
                                             dbc.Button(
@@ -676,7 +838,7 @@ class DashApp:
             prevent_initial_call=True,
         )
         def open_folder(_):
-            path = Path(self.app_config.get("storage", {}).get("base_dir", "./data")).resolve()
+            path = self.storage_base
             return dbc.Alert(f"Datos en: {path}", color="info", dismissable=True)
 
         @app.callback(
@@ -779,14 +941,35 @@ class DashApp:
             Output("realtime-psd", "figure"),
             Output("realtime-history", "figure"),
             Input("interval", "n_intervals"),
-            State("realtime-sensor", "value"),
+            Input("realtime-sensor", "value"),
+            Input("realtime-date", "date"),
         )
-        def update_realtime(_, sensor_id):
+        def update_realtime(_, sensor_id, date_value):
+            target_date = _parse_date_value(date_value)
             snapshot = self.realtime.snapshot()
-            analysis = snapshot.get(sensor_id)
+            analysis = snapshot.get(sensor_id) if sensor_id else None
             stay = next((s for s in self.stays if s.sensor_id == sensor_id), None)
             card = components.realtime_card(stay, analysis) if stay else html.Div("Sin datos")
             fig_time, fig_psd, history = _analysis_to_figures(analysis)
+            if target_date is not None:
+                history = [
+                    (ts, tension, qa)
+                    for ts, tension, qa in history
+                    if ts.date() == target_date
+                ]
+            if not history and sensor_id:
+                persisted = load_persisted_tension(
+                    self.storage_base, sensor_id=sensor_id, target_date=target_date
+                )
+                history = [
+                    (
+                        rec["t_window_end_local"],
+                        rec["T_kN"],
+                        rec["qa"],
+                    )
+                    for rec in persisted
+                    if rec["t_window_end_local"] is not None and rec["T_kN"] is not None
+                ]
             fig_hist = go.Figure()
             if history:
                 times, values, _qa = zip(*history)
@@ -802,17 +985,47 @@ class DashApp:
         @app.callback(
             Output("history-graph", "figure"),
             Input("interval", "n_intervals"),
-            State("history-sensor", "value"),
+            Input("history-sensor", "value"),
+            Input("history-date", "date"),
         )
-        def update_history(_, sensor_id):
+        def update_history(_, sensor_id, date_value):
+            target_date = _parse_date_value(date_value)
+            fig = go.Figure()
+            if not sensor_id:
+                fig.update_layout(
+                    title="Tensión (kN)",
+                    xaxis_title="Tiempo",
+                    yaxis_title="kN",
+                    template="plotly_white",
+                )
+                return fig
             snapshot = self.realtime.snapshot()
             analysis = snapshot.get(sensor_id)
-            fig = go.Figure()
+            history_points: List = []
             if analysis:
-                _, _, history = _analysis_to_figures(analysis)
-                if history:
-                    times, values, _qa = zip(*history)
-                    fig.add_trace(go.Scatter(x=list(times), y=list(values), mode="lines+markers"))
+                _, _, history_points = _analysis_to_figures(analysis)
+                if target_date is not None:
+                    history_points = [
+                        (ts, tension, qa)
+                        for ts, tension, qa in history_points
+                        if ts.date() == target_date
+                    ]
+            if not history_points:
+                persisted = load_persisted_tension(
+                    self.storage_base, sensor_id=sensor_id, target_date=target_date
+                )
+                history_points = [
+                    (
+                        rec["t_window_end_local"],
+                        rec["T_kN"],
+                        rec["qa"],
+                    )
+                    for rec in persisted
+                    if rec["t_window_end_local"] is not None and rec["T_kN"] is not None
+                ]
+            if history_points:
+                times, values, _qa = zip(*history_points)
+                fig.add_trace(go.Scatter(x=list(times), y=list(values), mode="lines+markers"))
             fig.update_layout(
                 title="Tensión (kN)",
                 xaxis_title="Tiempo",
@@ -858,4 +1071,4 @@ class DashApp:
         self.dash_app.run_server(host=host, port=port)
 
 
-__all__ = ["DashApp"]
+__all__ = ["DashApp", "load_persisted_tension", "TENSION_CSV_HEADERS"]
