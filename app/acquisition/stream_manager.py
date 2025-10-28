@@ -251,6 +251,10 @@ class StreamManager:
         stay = self.stays.get(sensor_id)
         if stay is None:
             return
+        state = self.sensors.get(sensor_id)
+        if state is not None:
+            state.info.sample_rate_hz = sample_rate
+            state.info.axes = list(axes)
         buffer = self.buffers.get(sensor_id)
         if buffer is None:
             buffer = SensorBuffer(self.analysis_cfg["window_sec"], sample_rate)

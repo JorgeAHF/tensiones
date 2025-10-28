@@ -1,6 +1,7 @@
 """Reusable Dash components for the monitoring UI."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Iterable, List, Optional
 
 import dash
@@ -9,6 +10,7 @@ from dash import dash_table, dcc, html
 
 from app.acquisition.mscl_client import GatewayStatus
 from app.acquisition.stream_manager import AnalysisState, SensorState, StayDefinition
+from app.utils.timeutils import DEFAULT_TZ
 
 
 SEM_COLOR_MAP = {
@@ -19,6 +21,18 @@ SEM_COLOR_MAP = {
 }
 
 
+def _format_timestamp(timestamp: Optional[float]) -> str:
+    if not timestamp:
+        return "-"
+    dt = datetime.fromtimestamp(timestamp, tz=DEFAULT_TZ)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_axes(axes: Iterable[str]) -> str:
+    labels = [axis.upper() for axis in axes]
+    return ", ".join(labels) if labels else "-"
+
+
 def network_table(states: Iterable[SensorState]) -> dash.development.base_component.Component:
     header = html.Thead(
         html.Tr(
@@ -26,29 +40,62 @@ def network_table(states: Iterable[SensorState]) -> dash.development.base_compon
                 html.Th("Sensor"),
                 html.Th("Tirante"),
                 html.Th("Fs (Hz)"),
+                html.Th("Fs estimado (Hz)"),
                 html.Th("Streaming"),
                 html.Th("Última muestra"),
+                html.Th("Canales activos"),
+                html.Th("Batería"),
             ]
         )
     )
     rows = []
     for state in states:
         info = state.info
+        battery = (
+            f"{info.battery_percent:.0f}%" if info.battery_percent is not None else "-"
+        )
         rows.append(
             html.Tr(
                 [
                     html.Td(info.sensor_id),
                     html.Td(info.stay_id),
                     html.Td(f"{info.sample_rate_hz:.2f}"),
+                    html.Td(f"{state.estimated_fs:.2f}" if state.estimated_fs else "-"),
                     html.Td(dbc.Badge("Sí", color="success") if state.streaming else dbc.Badge("No", color="secondary")),
-                    html.Td(
-                        f"{state.last_sample_timestamp:.1f}" if state.last_sample_timestamp else "-"
-                    ),
+                    html.Td(_format_timestamp(state.last_sample_timestamp)),
+                    html.Td(_format_axes(state.info.axes)),
+                    html.Td(battery),
                 ]
             )
         )
     body = html.Tbody(rows)
     return dbc.Table([header, body], bordered=True, hover=True, responsive=True, striped=True, className="bg-white shadow-sm")
+
+
+def network_summary(states: Iterable[SensorState]) -> dash.development.base_component.Component:
+    states_list = list(states)
+    total = len(states_list)
+    streaming = sum(1 for state in states_list if state.streaming)
+    paused = total - streaming
+    latest_timestamp = None
+    for state in states_list:
+        if state.last_sample_timestamp:
+            if latest_timestamp is None or state.last_sample_timestamp > latest_timestamp:
+                latest_timestamp = state.last_sample_timestamp
+    badges = [
+        dbc.Badge(f"Sensores: {total}", color="info", className="p-2 me-2"),
+        dbc.Badge(f"Streaming: {streaming}", color="success", className="p-2 me-2"),
+        dbc.Badge(f"Detenidos: {paused}", color="warning", className="p-2 me-2"),
+    ]
+    if latest_timestamp:
+        badges.append(
+            dbc.Badge(
+                f"Última muestra: {_format_timestamp(latest_timestamp)}",
+                color="secondary",
+                className="p-2",
+            )
+        )
+    return html.Div(badges, className="d-flex flex-wrap gap-2")
 
 
 def realtime_card(
@@ -128,6 +175,7 @@ def stay_config_table(stays: List[StayDefinition]) -> dash.development.base_comp
 
 __all__ = [
     "network_table",
+    "network_summary",
     "realtime_card",
     "acceleration_graph",
     "psd_graph",
