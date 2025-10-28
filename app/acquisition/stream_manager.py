@@ -389,11 +389,30 @@ class StreamManager:
         self._tension_writer.writerow(tension_row)
 
     def connect_gateway(self, host: str, port: int) -> GatewayStatus:
-        status = self.client.connect_gateway(host, port)
+        logger.info("Connecting to gateway at %s:%s", host, port)
+        try:
+            status = self.client.connect_gateway(host, port)
+        except Exception as exc:
+            logger.exception("Gateway connection raised an exception")
+            status = GatewayStatus(host=host, port=port, connected=False, message=str(exc))
         self._gateway_status = status
         if status.connected:
-            self.discover()
-        return status
+            logger.info("Gateway connected, starting discovery")
+            try:
+                self.discover()
+            except Exception as exc:
+                logger.exception("Failed to discover sensors after connection")
+                self._gateway_status = GatewayStatus(
+                    host=status.host,
+                    port=status.port,
+                    connected=status.connected,
+                    message=f"Conectado con errores: {exc}",
+                )
+        else:
+            logger.warning(
+                "Gateway connection failed for %s:%s -> %s", host, port, status.message
+            )
+        return self._gateway_status
 
     def disconnect_gateway(self) -> GatewayStatus:
         status = self.client.disconnect_gateway()
