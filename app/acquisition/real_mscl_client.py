@@ -157,70 +157,137 @@ class RealMSCLClient(MSCLClient):
         info = self._sensors[sensor_id]
         
         try:
-            # Configure and start node sampling
-            self._configure_and_start_node(node, info.sample_rate_hz)
+            # Try to configure and start node sampling (may fail if node doesn't support it)
+            try:
+                self._configure_and_start_node(node, info.sample_rate_hz)
+            except Exception as config_error:
+                LOGGER.warning(f"Could not configure node {sensor_id}, will try to read existing data: {config_error}")
+            
+            LOGGER.info(f"Stream worker for {sensor_id} starting data collection loop...")
+            node_addr_int = int(sensor_id)
+            samples_received = 0
             
             while not stop_event.is_set():
                 # Get data from base station
                 sweeps = self.base_station.getData(500)  # 500ms timeout
                 
                 for sweep in sweeps:
-                    if sweep.nodeAddress() != int(sensor_id):
+                    if sweep.nodeAddress() != node_addr_int:
                         continue
                     
+                    samples_received += 1
+                    if samples_received % 10 == 1:  # Log every 10th sweep
+                        LOGGER.info(f"Received sweep #{samples_received} from node {sensor_id}")
+                    
                     # Extract data from sweep
-                    timestamp = sweep.timestamp().secondsOfWeek()
+                    timestamp = sweep.timestamp().seconds()  # Get seconds since epoch
                     data = sweep.data()
                     
-                    # Convert to numpy array (assuming 3-axis accelerometer)
-                    # MSCL data format may vary - adjust as needed
-                    if len(data) >= 3:
-                        acc_data = np.array([
-                            data[0].as_float(),
-                            data[1].as_float(),
-                            data[2].as_float()
-                        ])
-                        
-                        sample = Sample(
-                            sensor_id=sensor_id,
-                            stay_id=info.stay_id,
-                            fs_hz=info.sample_rate_hz,
-                            timestamp=timestamp,
-                            acceleration_g=acc_data
-                        )
-                        
-                        callback(sample)
+                    if len(data) == 0:
+                        continue
+                    
+                    # In Sync Sampling mode, data comes as interleaved channels
+                    # For 3-axis accel: [X0, Y0, Z0, X1, Y1, Z1, ...]
+                    # Each sweep may contain multiple samples
+                    
+                    num_channels = 3  # X, Y, Z
+                    num_samples = len(data) // num_channels
+                    
+                    if num_samples == 0:
+                        LOGGER.warning(f"Sweep has {len(data)} data points, expected multiple of {num_channels}")
+                        continue
+                    
+                    # Parse all samples in this sweep
+                    samples_list = []
+                    for i in range(num_samples):
+                        try:
+                            # Get X, Y, Z for this sample
+                            idx_base = i * num_channels
+                            x = data[idx_base].as_float()
+                            y = data[idx_base + 1].as_float()
+                            z = data[idx_base + 2].as_float()
+                            samples_list.append([x, y, z])
+                        except:
+                            try:
+                                # Try as double
+                                x = data[idx_base].as_double()
+                                y = data[idx_base + 1].as_double()
+                                z = data[idx_base + 2].as_double()
+                                samples_list.append([x, y, z])
+                            except Exception as parse_err:
+                                LOGGER.warning(f"Could not parse sample {i}: {parse_err}")
+                                continue
+                    
+                    if not samples_list:
+                        continue
+                    
+                    # Create numpy array: shape (num_samples, 3)
+                    acc_data = np.array(samples_list, dtype=np.float64)
+                    
+                    # Log first sweep details
+                    if samples_received == 1:
+                        LOGGER.info(f"First sweep: {num_samples} samples, shape {acc_data.shape}")
+                    
+                    sample = Sample(
+                        sensor_id=sensor_id,
+                        stay_id=info.stay_id,
+                        fs_hz=info.sample_rate_hz,
+                        timestamp=timestamp,
+                        acceleration_g=acc_data
+                    )
+                    
+                    callback(sample)
                 
                 time.sleep(0.01)  # Small delay to prevent CPU spinning
                 
         except Exception as e:
             LOGGER.error(f"Error in stream worker for {sensor_id}: {e}")
         finally:
-            # Stop node sampling
-            try:
-                node.stopSampling()
-            except Exception as e:
-                LOGGER.warning(f"Failed to stop node {sensor_id}: {e}")
+            LOGGER.info(f"Stream worker for {sensor_id} shutting down...")
+            # Don't try to stop the node, it may cause errors
+            # try:
+            #     if sensor_id in self.nodes:
+            #         self.nodes[sensor_id].cyclePower()
+            #         LOGGER.info(f"Stopped sampling for node {sensor_id}")
+            # except Exception as e:
+            #     LOGGER.warning(f"Failed to stop node {sensor_id}: {e}")
     
     def _configure_and_start_node(self, node: mscl.WirelessNode, sample_rate_hz: float) -> None:
         """Configure and start sampling on a node."""
         try:
+            # Create basic config without reading from node
             config = mscl.WirelessNodeConfig()
-            config.defaultMode(mscl.WirelessTypes.defaultMode_idle)
+            
+            # Set sampling mode to sync sampling
             config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
             
+            # Configure active channels (accelerometer X, Y, Z)
+            channels = mscl.ChannelMask()
+            channels.enable(mscl.WirelessChannel.channel_1)  # X axis
+            channels.enable(mscl.WirelessChannel.channel_2)  # Y axis  
+            channels.enable(mscl.WirelessChannel.channel_3)  # Z axis
+            config.activeChannels(channels)
+            
             # Map sample rate to MSCL enum
-            if sample_rate_hz == 256:
-                config.sampleRate(mscl.WirelessTypes.sampleRate_256Hz)
-            elif sample_rate_hz == 512:
+            if sample_rate_hz == 512:
                 config.sampleRate(mscl.WirelessTypes.sampleRate_512Hz)
+            elif sample_rate_hz == 256:
+                config.sampleRate(mscl.WirelessTypes.sampleRate_256Hz)
+            elif sample_rate_hz == 128:
+                config.sampleRate(mscl.WirelessTypes.sampleRate_128Hz)
             else:
                 LOGGER.warning(f"Unsupported sample rate {sample_rate_hz}, using 256Hz")
                 config.sampleRate(mscl.WirelessTypes.sampleRate_256Hz)
             
+            # Apply configuration
             node.applyConfig(config)
-            node.startSampling()
-            LOGGER.info(f"Node {node.nodeAddress()} started sampling at {sample_rate_hz}Hz")
+            LOGGER.info(f"Node {node.nodeAddress()} configured for {sample_rate_hz}Hz sampling")
+            
+            # Start sampling
+            node.startSyncSampling()
+            LOGGER.info(f"Node {node.nodeAddress()} started sync sampling")
+            
         except Exception as e:
             LOGGER.error(f"Failed to configure/start node: {e}")
+            raise
             raise
