@@ -276,8 +276,17 @@ class StreamManager:
             return
         state = self.sensors.get(sensor_id)
         if state is None:
-            logger.warning("Sensor %s not discovered", sensor_id)
-            return
+            logger.debug(
+                "Sensor %s missing from cache, triggering discovery before start", sensor_id
+            )
+            try:
+                self.discover()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("Discovery failed when starting %s: %s", sensor_id, exc)
+            state = self.sensors.get(sensor_id)
+            if state is None:
+                logger.warning("Sensor %s not discovered", sensor_id)
+                return
         buffer = self.buffers.get(sensor_id)
         if buffer is None:
             self.configure(sensor_id, state.info.sample_rate_hz, state.info.axes)
