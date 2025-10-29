@@ -23,4 +23,4 @@ storage:
 timezone: America/Mexico_City
 ui:
   history_hours: 1
-  refresh_ms: 1000
+  refresh_ms: 500

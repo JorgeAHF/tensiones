@@ -935,7 +935,6 @@ class DashApp:
 
         @app.callback(
             Output("network-feedback", "children"),
-            Output("gateway-status", "children"),
             Input("btn-connect-gateway", "n_clicks"),
             Input("btn-disconnect-gateway", "n_clicks"),
             State("gateway-host", "value"),
@@ -968,8 +967,7 @@ class DashApp:
             except Exception as exc:  # pragma: no cover - defensive
                 logger.exception("Gateway control error")
                 feedback = dbc.Alert(str(exc), color="danger", dismissable=True)
-            badge = components.gateway_status_badge(status)
-            return feedback, badge
+            return feedback
 
         @app.callback(
             Output("config-feedback", "children"),
@@ -1267,7 +1265,7 @@ class DashApp:
             Output("accel-status", "children"),
             Input("interval", "n_intervals"),
         )
-        def update_accelerometer(_):
+        def update_accelerometer(n):
             """Actualiza la gráfica del acelerómetro en tiempo real - Sensor 10603."""
             import numpy as np
             
@@ -1285,62 +1283,58 @@ class DashApp:
                     template="plotly_white",
                     height=600,
                 )
-                status = dbc.Alert("⚠️ Sensor 10603 no encontrado. Ve a pestaña Red y haz clic en Discover.", color="danger")
+                status = dbc.Alert("⚠️ Sensor 10603 no encontrado.", color="danger")
                 return empty_fig, status
             
-            is_streaming = sensor_state.streaming
+            if not sensor_state.streaming:
+                # No está haciendo streaming
+                empty_fig = go.Figure()
+                empty_fig.update_layout(
+                    title="Streaming detenido",
+                    template="plotly_white",
+                    height=600,
+                )
+                status = dbc.Alert("🔴 Streaming NO activo", color="warning")
+                return empty_fig, status
             
             # Obtener estado del análisis desde el realtime store
             snapshot = self.realtime.snapshot()
             analysis_state = snapshot.get(sensor_id)
             
-            if not is_streaming:
-                # No está haciendo streaming
-                empty_fig = go.Figure()
-                empty_fig.update_layout(
-                    title="Streaming detenido",
-                    xaxis_title="Tiempo (s)",
-                    yaxis_title="Aceleración (g)",
-                    template="plotly_white",
-                    height=600,
-                )
-                status = dbc.Alert(
-                    [
-                        html.H5("🔴 Streaming NO activo", className="alert-heading"),
-                        html.P("Para ver datos en tiempo real:"),
-                        html.Ol([
-                            html.Li("Ve a la pestaña 'Red'"),
-                            html.Li("Haz clic en 'Discover' para detectar sensores"),
-                            html.Li("Haz clic en 'Start All' para iniciar streaming"),
-                        ]),
-                    ],
-                    color="warning"
-                )
-                return empty_fig, status
-            
             if analysis_state is None or len(analysis_state.recent_accel) == 0:
                 # Streaming activo pero sin datos aún
                 empty_fig = go.Figure()
                 empty_fig.update_layout(
-                    title="⏳ Esperando datos... (puede tomar 5-10 segundos)",
-                    xaxis_title="Tiempo (s)",
-                    yaxis_title="Aceleración (g)",
+                    title="⏳ Esperando datos...",
                     template="plotly_white",
                     height=600,
                 )
-                status = dbc.Alert(
-                    "✅ Streaming ACTIVO - Esperando primera ventana de datos...",
-                    color="info"
-                )
+                status = dbc.Alert("✅ Streaming ACTIVO - Esperando datos...", color="info")
                 return empty_fig, status
             
             try:
-                # Obtener el registro de aceleración más reciente
-                latest_accel = analysis_state.recent_accel[-1]
+                # Obtener buffer continuo (últimos 3 segundos - balance entre suavidad y performance)
+                buffer_data = self.realtime.get_display_buffer(sensor_id, window_seconds=3.0)
                 
-                # Extraer datos
-                timestamps = latest_accel.timestamps
-                samples = latest_accel.samples  # Shape: (n_samples, 3) para [x, y, z]
+                if buffer_data is None:
+                    empty_fig = go.Figure()
+                    empty_fig.update_layout(title="⏳ Llenando buffer...", template="plotly_white", height=600)
+                    status = dbc.Alert("✅ Llenando buffer...", color="info")
+                    return empty_fig, status
+                
+                timestamps, samples = buffer_data
+                
+                # CRÍTICO: Ordenar por timestamp para evitar líneas verticales extrañas
+                if len(timestamps) > 0:
+                    sort_indices = np.argsort(timestamps)
+                    timestamps = timestamps[sort_indices]
+                    samples = samples[sort_indices]
+                
+                # Submuestreo moderado: tomar 1 de cada 2 muestras (128Hz efectivo)
+                # Esto da ~384 puntos por 3 segundos - óptimo para WebGL
+                subsample_rate = 2
+                timestamps = timestamps[::subsample_rate]
+                samples = samples[::subsample_rate]
                 
                 # Calcular tiempos relativos
                 if len(timestamps) > 0:
@@ -1355,85 +1349,71 @@ class DashApp:
                     y_data = samples[:, 1]
                     z_data = samples[:, 2]
                 else:
-                    # Si no hay datos con forma correcta, crear vacíos
                     x_data = np.zeros(len(times))
                     y_data = np.zeros(len(times))
                     z_data = np.zeros(len(times))
                 
-                # Crear gráfica combinada con los 3 ejes
+                # Crear gráfica OPTIMIZADA con Scattergl (aceleración WebGL)
                 fig = go.Figure()
                 
-                fig.add_trace(go.Scatter(
-                    x=times,
-                    y=x_data,
-                    mode='lines',
-                    name='Eje X',
-                    line=dict(color='#e74c3c', width=2),
+                # Scattergl es 10-100x más rápido que Scatter para datos grandes
+                # visible=True por defecto - Plotly mantendrá el estado del usuario gracias a uirevision
+                fig.add_trace(go.Scattergl(
+                    x=times, y=x_data, mode='lines', name='X',
+                    line=dict(color='#e74c3c', width=1.5),
+                    visible=True,  # Estado inicial, preservado por uirevision
                 ))
                 
-                fig.add_trace(go.Scatter(
-                    x=times,
-                    y=y_data,
-                    mode='lines',
-                    name='Eje Y',
-                    line=dict(color='#3498db', width=2),
+                fig.add_trace(go.Scattergl(
+                    x=times, y=y_data, mode='lines', name='Y',
+                    line=dict(color='#3498db', width=1.5),
+                    visible=True,  # Estado inicial, preservado por uirevision
                 ))
                 
-                fig.add_trace(go.Scatter(
-                    x=times,
-                    y=z_data,
-                    mode='lines',
-                    name='Eje Z',
-                    line=dict(color='#2ecc71', width=2),
+                fig.add_trace(go.Scattergl(
+                    x=times, y=z_data, mode='lines', name='Z',
+                    line=dict(color='#2ecc71', width=1.5),
+                    visible=True,  # Estado inicial, preservado por uirevision
                 ))
                 
                 fig.update_layout(
-                    title=f"Aceleración 3 Ejes - Sensor 10603",
+                    title=f"Acelerómetro 10603 - {len(times)} puntos @ 128Hz",
                     xaxis_title="Tiempo (s)",
                     yaxis_title="Aceleración (g)",
                     template="plotly_white",
                     height=600,
-                    hovermode='x unified',
+                    hovermode='x unified',  # Mejor para tiempo real
+                    showlegend=True,
+                    uirevision='accel-10603',  # ID único y constante - preserva TODOS los estados de UI
+                    margin=dict(l=50, r=20, t=80, b=50),  # Más margen superior para la leyenda
                     legend=dict(
-                        orientation="h",
+                        orientation="h",  # Leyenda horizontal
                         yanchor="bottom",
-                        y=1.02,
-                        xanchor="right",
-                        x=1
-                    )
+                        y=1.15,  # Más separación del área de gráfica
+                        xanchor="center",  # Centrada
+                        x=0.5,  # En el centro horizontal
+                        bgcolor="rgba(255, 255, 255, 0.8)",  # Fondo semi-transparente
+                        bordercolor="#ddd",
+                        borderwidth=1
+                    ),
                 )
                 
-                # Estado con información detallada
+                # Configuración optimizada de ejes
+                fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+                fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+                
                 status = dbc.Alert(
-                    [
-                        html.H5("✅ Streaming ACTIVO", className="alert-heading"),
-                        html.P([
-                            html.Strong(f"{len(times)} muestras"),
-                            f" | Frecuencia: {sensor_state.info.sample_rate_hz:.0f} Hz",
-                            f" | Ventana: {times[-1]:.1f}s" if len(times) > 0 else "",
-                        ]),
-                    ],
+                    f"✅ ACTIVO | {len(times)} muestras | Actualización: 500ms (2/seg)",
                     color="success"
                 )
                 
                 return fig, status
                 
             except Exception as e:
-                logger.error(f"Error al actualizar gráficas del acelerómetro: {e}", exc_info=True)
+                logger.error(f"[ACCEL] Error: {e}", exc_info=True)
                 error_fig = go.Figure()
-                error_fig.update_layout(
-                    title=f"❌ Error al procesar datos",
-                    template="plotly_white",
-                    height=600,
-                )
-                status = dbc.Alert(
-                    [
-                        html.H5("❌ Error", className="alert-heading"),
-                        html.P(f"Error: {str(e)}"),
-                        html.P("Revisa los logs para más detalles."),
-                    ],
-                    color="danger"
-                )
+                error_fig.update_layout(title=f"❌ Error", template="plotly_white", height=600)
+                status = dbc.Alert(f"❌ Error: {str(e)}", color="danger")
                 return error_fig, status
 
     def run(self, host: str = "0.0.0.0", port: int = 8050) -> None:

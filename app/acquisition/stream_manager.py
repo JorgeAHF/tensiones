@@ -67,6 +67,10 @@ class RealtimeDataStore:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._analysis: Dict[str, AnalysisState] = {}
+        # Buffer continuo para visualización suave (ventana de 30 segundos)
+        self._display_buffers: Dict[str, Tuple[deque, deque]] = {}  # sensor_id -> (timestamps, samples)
+        # Índice del último dato leído por la UI (para streaming incremental)
+        self._last_read_index: Dict[str, int] = {}
 
     def ensure_sensor(self, sensor_id: str) -> AnalysisState:
         with self._lock:
@@ -74,6 +78,10 @@ class RealtimeDataStore:
             if state is None:
                 state = AnalysisState()
                 self._analysis[sensor_id] = state
+            # Inicializar buffer de visualización si no existe
+            if sensor_id not in self._display_buffers:
+                self._display_buffers[sensor_id] = (deque(maxlen=30*256), deque(maxlen=30*256))  # 30s @ 256Hz
+                self._last_read_index[sensor_id] = 0
             return state
 
     def update_analysis(
@@ -93,10 +101,91 @@ class RealtimeDataStore:
             state.history.append((timestamp, tension, qa))
             state.recent_accel.append(accel)
             state.psd_cache = psd
+            
+            # Actualizar buffer continuo de visualización
+            timestamps_buf, samples_buf = self._display_buffers[sensor_id]
+            for i, ts in enumerate(accel.timestamps):
+                timestamps_buf.append(ts)
+                samples_buf.append(accel.samples[i])  # Cada muestra es un array [x, y, z]
 
     def snapshot(self) -> Dict[str, AnalysisState]:
         with self._lock:
             return {k: v for k, v in self._analysis.items()}
+    
+    def get_display_buffer(self, sensor_id: str, window_seconds: float = 10.0) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Obtiene los últimos N segundos del buffer continuo para visualización suave.
+        
+        Args:
+            sensor_id: ID del sensor
+            window_seconds: Ventana de tiempo a mostrar (en segundos)
+            
+        Returns:
+            Tupla (timestamps, samples) o None si no hay datos
+            - timestamps: array 1D con timestamps
+            - samples: array 2D con shape (n_samples, 3) para [x, y, z]
+        """
+        with self._lock:
+            if sensor_id not in self._display_buffers:
+                return None
+            
+            timestamps_buf, samples_buf = self._display_buffers[sensor_id]
+            
+            if len(timestamps_buf) == 0:
+                return None
+            
+            # Convertir deque a arrays
+            all_timestamps = np.array(list(timestamps_buf))
+            all_samples = np.array(list(samples_buf))
+            
+            # Filtrar solo los últimos N segundos
+            latest_time = all_timestamps[-1]
+            cutoff_time = latest_time - window_seconds
+            
+            mask = all_timestamps >= cutoff_time
+            filtered_timestamps = all_timestamps[mask]
+            filtered_samples = all_samples[mask]
+            
+            return filtered_timestamps, filtered_samples
+    
+    def get_new_data_since_last_read(self, sensor_id: str) -> Optional[Tuple[np.ndarray, np.ndarray, int]]:
+        """Obtiene solo los datos nuevos desde la última lectura (para streaming incremental).
+        
+        Args:
+            sensor_id: ID del sensor
+            
+        Returns:
+            Tupla (timestamps, samples, total_count) o None si no hay datos nuevos
+            - timestamps: array 1D con timestamps de datos nuevos
+            - samples: array 2D con shape (n_samples, 3) para [x, y, z]
+            - total_count: cantidad total de datos en el buffer (para detectar reset)
+        """
+        with self._lock:
+            if sensor_id not in self._display_buffers:
+                return None
+            
+            timestamps_buf, samples_buf = self._display_buffers[sensor_id]
+            total_count = len(timestamps_buf)
+            
+            if total_count == 0:
+                return None
+            
+            last_index = self._last_read_index.get(sensor_id, 0)
+            
+            # Si el buffer se limpió o es más pequeño que el último índice, reiniciar
+            if last_index >= total_count:
+                last_index = max(0, total_count - 256)  # Tomar los últimos 256 puntos (1 segundo @ 256Hz)
+            
+            # Obtener solo los datos nuevos
+            new_timestamps = list(timestamps_buf)[last_index:]
+            new_samples = list(samples_buf)[last_index:]
+            
+            if len(new_timestamps) == 0:
+                return None
+            
+            # Actualizar el índice de última lectura
+            self._last_read_index[sensor_id] = total_count
+            
+            return np.array(new_timestamps), np.array(new_samples), total_count
 
 
 class SensorBuffer:
@@ -326,6 +415,7 @@ class StreamManager:
             self.stop(sensor_id)
 
     def _handle_sample(self, sensor_id: str, sample: Sample) -> None:
+        logger.info(f"_handle_sample called for {sensor_id}: {len(sample.acceleration_g)} samples")
         stay = self.stays[sensor_id]
         state = self.sensors[sensor_id]
         state.last_sample_timestamp = sample.timestamp
@@ -394,6 +484,9 @@ class StreamManager:
 
         qa = result.quality
         window_end_dt = datetime.fromtimestamp(sample.timestamp, tz=DEFAULT_TZ)
+        f1_str = f"{result.f1_hz:.2f}Hz" if result.f1_hz is not None else "N/A"
+        tension_str = f"{tension.tension_newton:.1f}N" if tension.tension_newton is not None else "N/A"
+        logger.info(f"Updating realtime_store for {sensor_id}: f1={f1_str}, tension={tension_str}, samples={len(samples)}")
         self.realtime_store.update_analysis(
             sensor_id,
             result,
