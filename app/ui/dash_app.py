@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import csv
 import logging
+import threading
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,10 +12,12 @@ from typing import Any, Dict, List, Optional
 import dash
 import dash_bootstrap_components as dbc
 from dash import Input, Output, State, callback_context, dcc, html, dash_table
+import numpy as np
 import plotly.graph_objects as go
 import yaml
 
 from app.acquisition.stream_manager import RealtimeDataStore, StayDefinition, StreamManager
+from app.acquisition.playback_client import RecordingSession
 from app.utils.timeutils import DEFAULT_TZ
 from app.utils.validators import Thresholds
 from app.ui import components
@@ -213,6 +217,14 @@ class DashApp:
         self.storage_base = Path(
             app_config.get("storage", {}).get("base_dir", "./data")
         ).resolve()
+        
+        # Variables para monitoreo de 2 minutos
+        self.monitor_recording = None  # RecordingSession
+        self.monitor_csv_file = None   # Path del CSV grabado
+        self.monitor_playback_data = None  # Lista de datos [(timestamp, x, y, z), ...]
+        self.monitor_playback_index = 0  # Índice actual en reproducción
+        self.monitor_thread = None  # Thread de grabación
+        
         external_stylesheets = [dbc.themes.LUX]
         self.dash_app = dash.Dash(
             __name__,
@@ -831,6 +843,9 @@ class DashApp:
             label="Acelerómetro",
             tab_id="accelerometer",
             children=[
+                # Store para mantener el estado de pausa/reanudación
+                dcc.Store(id="accel-paused", data=False),
+                
                 dbc.Card(
                     [
                         dbc.CardHeader("Datos del Acelerómetro en Tiempo Real - Sensor 10603"),
@@ -842,7 +857,18 @@ class DashApp:
                                             [
                                                 html.Div(id="accel-status", className="mt-2"),
                                             ],
-                                            md=12,
+                                            md=9,
+                                        ),
+                                        dbc.Col(
+                                            [
+                                                dbc.Button(
+                                                    "⏸ Detener Gráfico",
+                                                    id="accel-pause-btn",
+                                                    color="warning",
+                                                    className="w-100",
+                                                ),
+                                            ],
+                                            md=3,
                                         ),
                                     ],
                                     className="mb-3",
@@ -869,11 +895,131 @@ class DashApp:
             ],
         )
 
+        # Nueva pestaña: Monitoreo de 2 Minutos (SIMPLIFICADO)
+        monitor_tab = dbc.Tab(
+            label="Monitoreo 2min",
+            tab_id="monitor-2min",
+            children=[
+                dcc.Store(id="monitor-recording-active", data=False),
+                dcc.Store(id="monitor-playback-index", data=0),
+                dcc.Store(id="monitor-csv-path", data=None),
+                dcc.Interval(id="monitor-record-interval", interval=1000, disabled=True),  # Cada 1s para mostrar progreso
+                dcc.Interval(id="monitor-playback-interval", interval=50, disabled=True),  # Cada 50ms para reproducción
+                
+                dbc.Card(
+                    [
+                        dbc.CardHeader("Monitoreo de 2 Minutos - Grabación y Reproducción"),
+                        dbc.CardBody(
+                            [
+                                # Instrucciones
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                html.H5("📝 Instrucciones:", className="text-primary"),
+                                                html.P([
+                                                    "1️⃣ Presiona ",
+                                                    html.Strong("'Grabar 2 Minutos'"),
+                                                    " para iniciar la grabación desde el hardware.",
+                                                    html.Br(),
+                                                    "2️⃣ Espera 2 minutos mientras se graban los datos en un CSV.",
+                                                    html.Br(),
+                                                    "3️⃣ Cuando termine, presiona ",
+                                                    html.Strong("'Reproducir CSV'"),
+                                                    " para ver los datos como si fuera tiempo real.",
+                                                ]),
+                                            ],
+                                            md=12,
+                                            className="mb-3",
+                                        ),
+                                    ]
+                                ),
+                                
+                                # Botones de control
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                dbc.Button(
+                                                    "🔴 Grabar 2 Minutos",
+                                                    id="btn-record-2min",
+                                                    color="danger",
+                                                    size="lg",
+                                                    className="w-100",
+                                                ),
+                                            ],
+                                            md=4,
+                                        ),
+                                        dbc.Col(
+                                            [
+                                                dbc.Button(
+                                                    "▶️ Reproducir CSV",
+                                                    id="btn-play-csv",
+                                                    color="success",
+                                                    size="lg",
+                                                    className="w-100",
+                                                    disabled=True,
+                                                ),
+                                            ],
+                                            md=4,
+                                        ),
+                                        dbc.Col(
+                                            [
+                                                dbc.Button(
+                                                    "⏹️ Detener",
+                                                    id="btn-stop-all",
+                                                    color="secondary",
+                                                    size="lg",
+                                                    className="w-100",
+                                                ),
+                                            ],
+                                            md=4,
+                                        ),
+                                    ],
+                                    className="mb-3",
+                                ),
+                                
+                                # Feedback
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                html.Div(id="monitor-status-msg"),
+                                            ],
+                                            md=12,
+                                        ),
+                                    ],
+                                    className="mb-3",
+                                ),
+                                
+                                # Gráfica
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                dcc.Graph(
+                                                    id="monitor-graph",
+                                                    config={"displayModeBar": True},
+                                                    style={"height": "600px"},
+                                                ),
+                                            ],
+                                            md=12,
+                                        ),
+                                    ],
+                                ),
+                            ]
+                        ),
+                    ],
+                    className="mb-4 shadow-sm",
+                ),
+            ],
+        )
+
         self.dash_app.layout = dbc.Container(
             [
                 html.H1("MSCL Tension Platform", className="mb-4 fw-bold"),
                 dbc.Tabs(
-                    [network_tab, realtime_tab, history_tab, config_tab, accel_tab],
+                    [network_tab, realtime_tab, history_tab, config_tab, accel_tab, monitor_tab],
                     id="tabs",
                     active_tab="network",
                     className="mb-4",
@@ -1260,57 +1406,46 @@ class DashApp:
                 self.manager.stop(sensor_value)
             return sensor_value
 
+        # Callback para controlar el botón de pausa
+        @app.callback(
+            Output("accel-paused", "data"),
+            Output("accel-pause-btn", "children"),
+            Output("accel-pause-btn", "color"),
+            Input("accel-pause-btn", "n_clicks"),
+            State("accel-paused", "data"),
+        )
+        def toggle_pause(n_clicks, is_paused):
+            """Alterna entre pausar y reanudar la actualización del gráfico."""
+            # Manejar el caso inicial (n_clicks es None)
+            if n_clicks is None or n_clicks == 0:
+                return False, "⏸ Detener Gráfico", "warning"
+            
+            # Alternar el estado (manejar caso cuando is_paused es None)
+            new_paused = not (is_paused or False)
+            
+            if new_paused:
+                # Ahora está pausado
+                return True, "▶️ Reanudar Gráfico", "success"
+            else:
+                # Ahora está activo
+                return False, "⏸ Detener Gráfico", "warning"
+
         @app.callback(
             Output("accel-graph-combined", "figure"),
             Output("accel-status", "children"),
             Input("interval", "n_intervals"),
+            State("accel-paused", "data"),
         )
-        def update_accelerometer(n):
+        def update_accelerometer(n, is_paused):
             """Actualiza la gráfica del acelerómetro en tiempo real - Sensor 10603."""
             import numpy as np
             
+            # Si está pausado, no actualizar
+            if is_paused:
+                raise dash.exceptions.PreventUpdate
+            
             # Siempre usar sensor 10603
             sensor_id = "10603"
-            
-            # Obtener estado del sensor
-            sensor_state = self.manager.sensors.get(sensor_id)
-            
-            if not sensor_state:
-                # Sensor no encontrado
-                empty_fig = go.Figure()
-                empty_fig.update_layout(
-                    title="Sensor 10603 no encontrado",
-                    template="plotly_white",
-                    height=600,
-                )
-                status = dbc.Alert("⚠️ Sensor 10603 no encontrado.", color="danger")
-                return empty_fig, status
-            
-            if not sensor_state.streaming:
-                # No está haciendo streaming
-                empty_fig = go.Figure()
-                empty_fig.update_layout(
-                    title="Streaming detenido",
-                    template="plotly_white",
-                    height=600,
-                )
-                status = dbc.Alert("🔴 Streaming NO activo", color="warning")
-                return empty_fig, status
-            
-            # Obtener estado del análisis desde el realtime store
-            snapshot = self.realtime.snapshot()
-            analysis_state = snapshot.get(sensor_id)
-            
-            if analysis_state is None or len(analysis_state.recent_accel) == 0:
-                # Streaming activo pero sin datos aún
-                empty_fig = go.Figure()
-                empty_fig.update_layout(
-                    title="⏳ Esperando datos...",
-                    template="plotly_white",
-                    height=600,
-                )
-                status = dbc.Alert("✅ Streaming ACTIVO - Esperando datos...", color="info")
-                return empty_fig, status
             
             try:
                 # Obtener buffer continuo (últimos 3 segundos - balance entre suavidad y performance)
@@ -1415,6 +1550,293 @@ class DashApp:
                 error_fig.update_layout(title=f"❌ Error", template="plotly_white", height=600)
                 status = dbc.Alert(f"❌ Error: {str(e)}", color="danger")
                 return error_fig, status
+
+        # ============================================================================
+        # CALLBACKS PARA MONITOREO DE 2 MINUTOS - VERSIÓN SIMPLIFICADA
+        # ============================================================================
+        
+        @app.callback(
+            Output("monitor-recording-active", "data"),
+            Output("monitor-csv-path", "data"),
+            Output("monitor-record-interval", "disabled"),
+            Output("btn-record-2min", "disabled"),
+            Output("btn-play-csv", "disabled"),
+            Input("btn-record-2min", "n_clicks"),
+            prevent_initial_call=True,
+        )
+        def start_recording_2min(n_clicks):
+            """Inicia la grabación de 2 minutos en un thread."""
+            if not n_clicks:
+                return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+            
+            try:
+                import mscl
+                from app.acquisition.real_mscl_client import RealMSCLClient
+                
+                logger.info("🎬 === INICIANDO GRABACIÓN DE 2 MINUTOS ===")
+                
+                # Crear sesión de grabación
+                self.monitor_recording = RecordingSession(output_dir="data/playback")
+                self.monitor_csv_file = None  # Resetear
+                
+                # Conectar al hardware
+                self.monitor_connection = mscl.Connection.TcpIp("192.168.8.101", 5000)
+                self.monitor_base_station = mscl.BaseStation(self.monitor_connection)
+                
+                if not self.monitor_base_station.ping():
+                    raise ConnectionError("No se pudo conectar a la BaseStation")
+                
+                logger.info("✅ Conectado a BaseStation para grabación")
+                
+                # Obtener configuración del sensor
+                sensor_configs = [
+                    {"sensor_id": stay.sensor_id, "stay_id": stay.stay_id} 
+                    for stay in self.stays
+                ]
+                default_fs = float(self.app_config.get("default_fs_hz", 256))
+                
+                # Crear cliente MSCL real (guardar como instancia)
+                self.monitor_client = RealMSCLClient(self.monitor_base_station, sensor_configs, default_fs)
+                
+                # Función de callback para grabar datos
+                def on_sample(sample):
+                    if self.monitor_recording:
+                        # Desempaquetar el Sample para add_sample
+                        timestamp = sample.timestamp
+                        sensor_id = sample.sensor_id
+                        # acceleration_g es (n, 3), extraer primera fila
+                        x, y, z = sample.acceleration_g[0]
+                        self.monitor_recording.add_sample(timestamp, x, y, z, sensor_id)
+                
+                # Iniciar streaming
+                for sensor_id in [cfg["sensor_id"] for cfg in sensor_configs]:
+                    self.monitor_client.start_streaming(sensor_id, on_sample)
+                
+                logger.info("🔄 Streaming iniciado, grabando por 120 segundos...")
+                
+                # Thread para grabar por 2 minutos
+                def record_thread():
+                    try:
+                        logger.info("🧵 Thread de grabación INICIADO")
+                        start_time = time.time()
+                        duration = 120  # 2 minutos
+                        
+                        while time.time() - start_time < duration:
+                            time.sleep(1)
+                        
+                        logger.info("⏱️ Tiempo completado, deteniendo streaming...")
+                        
+                        # Detener streaming
+                        for sensor_id in [cfg["sensor_id"] for cfg in sensor_configs]:
+                            self.monitor_client.stop_streaming(sensor_id)
+                        
+                        logger.info("🛑 Streaming detenido, guardando CSV...")
+                        
+                        # Guardar CSV (stop_recording() guarda automáticamente)
+                        if self.monitor_recording:
+                            csv_path = self.monitor_recording.stop_recording()
+                            if csv_path:
+                                self.monitor_csv_file = str(csv_path)
+                                logger.info(f"✅ Grabación completada exitosamente: {csv_path}")
+                            else:
+                                logger.error("❌ No se pudo guardar el CSV - no hay datos")
+                                self.monitor_csv_file = None
+                        else:
+                            logger.error("❌ No existe sesión de grabación activa")
+                            self.monitor_csv_file = None
+                    
+                    except Exception as e:
+                        logger.error(f"❌ Error en thread de grabación: {e}", exc_info=True)
+                        self.monitor_csv_file = None
+                    
+                    finally:
+                        logger.info(f"🏁 Thread de grabación finalizado. CSV file: {self.monitor_csv_file}")
+                
+                # Iniciar thread
+                self.monitor_thread = threading.Thread(target=record_thread, daemon=True)
+                self.monitor_thread.start()
+                
+                # Activar grabación: habilitar interval de progreso, deshabilitar botón grabar
+                return True, None, False, True, True
+            
+            except Exception as e:
+                logger.error(f"Error al iniciar grabación: {e}", exc_info=True)
+                return False, None, True, False, True
+        
+        @app.callback(
+            Output("monitor-status-msg", "children"),
+            Output("btn-play-csv", "disabled", allow_duplicate=True),
+            Output("monitor-recording-active", "data", allow_duplicate=True),
+            Output("monitor-record-interval", "disabled", allow_duplicate=True),
+            Output("btn-record-2min", "disabled", allow_duplicate=True),
+            Input("monitor-record-interval", "n_intervals"),
+            State("monitor-recording-active", "data"),
+            prevent_initial_call=True,
+        )
+        def update_recording_status(n_intervals, recording_active):
+            """Actualiza el mensaje de estado durante la grabación."""
+            if not recording_active:
+                return "", dash.no_update, dash.no_update, dash.no_update, dash.no_update
+            
+            # Verificar si el thread terminó
+            if self.monitor_thread and not self.monitor_thread.is_alive():
+                # Thread terminó
+                if self.monitor_csv_file:
+                    msg = dbc.Alert(
+                        f"✅ Grabación completa. CSV guardado: {self.monitor_csv_file}. Presiona 'Reproducir CSV'.",
+                        color="success"
+                    )
+                    # Habilitar botón de reproducción, deshabilitar interval, habilitar botón de grabar
+                    return msg, False, False, True, False
+                else:
+                    msg = dbc.Alert(
+                        "❌ Error durante la grabación. Revisa los logs.",
+                        color="danger"
+                    )
+                    return msg, True, False, True, False
+            
+            # Thread aún grabando
+            elapsed = n_intervals  # Cada intervalo = 1 segundo
+            msg = dbc.Alert(
+                f"🔴 GRABANDO... {elapsed}s / 120s",
+                color="warning"
+            )
+            return msg, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        
+        @app.callback(
+            Output("monitor-playback-index", "data"),
+            Output("monitor-playback-interval", "disabled"),
+            Output("btn-play-csv", "disabled", allow_duplicate=True),
+            Output("btn-record-2min", "disabled", allow_duplicate=True),
+            Input("btn-play-csv", "n_clicks"),
+            prevent_initial_call=True,
+        )
+        def start_playback(n_clicks):
+            """Carga el CSV y activa la reproducción."""
+            if not n_clicks or not self.monitor_csv_file:
+                return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+            
+            try:
+                from pathlib import Path
+                import csv
+                
+                csv_path = Path(self.monitor_csv_file)
+                
+                # Cargar CSV en memoria
+                data = []
+                with csv_path.open('r') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        timestamp = float(row['timestamp'])
+                        x = float(row['x'])
+                        y = float(row['y'])
+                        z = float(row['z'])
+                        data.append((timestamp, x, y, z))
+                
+                self.monitor_playback_data = data
+                self.monitor_playback_index = 0
+                
+                logger.info(f"Cargados {len(data)} samples para reproducción")
+                
+                # Activar interval de playback, deshabilitar botones
+                return 0, False, True, True
+            
+            except Exception as e:
+                logger.error(f"Error cargando CSV para reproducción: {e}", exc_info=True)
+                return dash.no_update, True, False, False
+        
+        @app.callback(
+            Output("monitor-graph", "figure"),
+            Input("monitor-playback-interval", "n_intervals"),
+            State("monitor-playback-index", "data"),
+            prevent_initial_call=True,
+        )
+        def update_playback_graph(n_intervals, playback_index):
+            """Actualiza la gráfica durante la reproducción."""
+            if not self.monitor_playback_data:
+                fig = go.Figure()
+                fig.update_layout(title="Esperando datos...", template="plotly_white", height=600)
+                return fig
+            
+            # Incrementar índice (reproducir más muestras cada frame)
+            samples_per_frame = 13  # ~256 Hz / 20 FPS = 13 samples/frame
+            self.monitor_playback_index += samples_per_frame
+            
+            max_index = len(self.monitor_playback_data)
+            if self.monitor_playback_index >= max_index:
+                self.monitor_playback_index = max_index  # Detener al final
+            
+            # Obtener datos hasta el índice actual
+            current_data = self.monitor_playback_data[:self.monitor_playback_index]
+            
+            if not current_data:
+                fig = go.Figure()
+                fig.update_layout(title="Iniciando reproducción...", template="plotly_white", height=600)
+                return fig
+            
+            # Separar componentes
+            times = [d[0] for d in current_data]
+            x_data = [d[1] for d in current_data]
+            y_data = [d[2] for d in current_data]
+            z_data = [d[3] for d in current_data]
+            
+            # Crear gráfica
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scattergl(
+                x=times, y=x_data, mode='lines', name='X',
+                line=dict(color='#e74c3c', width=1.5),
+            ))
+            
+            fig.add_trace(go.Scattergl(
+                x=times, y=y_data, mode='lines', name='Y',
+                line=dict(color='#3498db', width=1.5),
+            ))
+            
+            fig.add_trace(go.Scattergl(
+                x=times, y=z_data, mode='lines', name='Z',
+                line=dict(color='#2ecc71', width=1.5),
+            ))
+            
+            progress = (self.monitor_playback_index / max_index) * 100 if max_index > 0 else 0
+            
+            fig.update_layout(
+                title=f"Reproducción - {len(current_data)} muestras ({progress:.1f}%)",
+                xaxis_title="Tiempo (s)",
+                yaxis_title="Aceleración (g)",
+                template="plotly_white",
+                height=600,
+                hovermode='x unified',
+                showlegend=True,
+                uirevision='monitor-graph',
+            )
+            
+            return fig
+        
+        @app.callback(
+            Output("monitor-recording-active", "data", allow_duplicate=True),
+            Output("monitor-playback-interval", "disabled", allow_duplicate=True),
+            Output("monitor-record-interval", "disabled", allow_duplicate=True),
+            Output("btn-record-2min", "disabled", allow_duplicate=True),
+            Output("btn-play-csv", "disabled", allow_duplicate=True),
+            Input("btn-stop-all", "n_clicks"),
+            prevent_initial_call=True,
+        )
+        def stop_all(n_clicks):
+            """Detiene todo: grabación y reproducción."""
+            if not n_clicks:
+                return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+            
+            # Limpiar estado
+            self.monitor_recording = None
+            self.monitor_playback_data = None
+            self.monitor_playback_index = 0
+            
+            logger.info("⏹️ Detenido por usuario")
+            
+            # Desactivar todo, habilitar botón de grabar si hay CSV
+            play_enabled = False if not self.monitor_csv_file else False
+            return False, True, True, False, play_enabled
 
     def run(self, host: str = "0.0.0.0", port: int = 8050) -> None:
         self.dash_app.run(host=host, port=port)

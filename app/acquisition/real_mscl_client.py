@@ -23,6 +23,8 @@ class RealMSCLClient(MSCLClient):
         self._threads: Dict[str, threading.Thread] = {}
         self._stops: Dict[str, threading.Event] = {}
         self._callbacks: Dict[str, Callable[[Sample], None]] = {}
+        self._sync_network = None  # Will hold SyncSamplingNetwork
+        self._sync_network_started = False
         self._gateway_status = GatewayStatus(host="192.168.8.101", port=5000, connected=True, message="Connected to real MSCL Gateway")
         self._initialize_nodes()
     
@@ -62,6 +64,24 @@ class RealMSCLClient(MSCLClient):
                             time.sleep(1)
                 
                 if ping_success:
+                    # CRÍTICO: Configurar el nodo para muestreo continuo ANTES de usarlo
+                    try:
+                        LOGGER.info(f"Configuring node {sensor_id} for unlimited duration sampling...")
+                        
+                        # Obtener configuración del nodo
+                        config = node.getConfig()
+                        
+                        # Configurar para duración ilimitada (no se detiene automáticamente)
+                        config.unlimitedDuration(True)
+                        
+                        # Aplicar configuración
+                        node.applyConfig(config)
+                        LOGGER.info(f"Node {sensor_id} configured for continuous unlimited sampling!")
+                    except AttributeError as attr_err:
+                        LOGGER.warning(f"Node API does not support unlimitedDuration: {attr_err}")
+                    except Exception as config_err:
+                        LOGGER.warning(f"Could not configure node {sensor_id} for unlimited duration: {config_err}")
+                    
                     # Create SensorInfo
                     sensor_info = SensorInfo(
                         sensor_id=sensor_id,
@@ -157,27 +177,52 @@ class RealMSCLClient(MSCLClient):
         info = self._sensors[sensor_id]
         
         try:
-            # Try to configure and start node sampling (may fail if node doesn't support it)
-            try:
-                self._configure_and_start_node(node, info.sample_rate_hz)
-            except Exception as config_error:
-                LOGGER.warning(f"Could not configure node {sensor_id}, will try to read existing data: {config_error}")
+            # Try to configure and start the node with multiple strategies
+            LOGGER.info(f"Initializing sampling for node {sensor_id}...")
+            self._configure_and_start_node(node, info.sample_rate_hz)
             
             LOGGER.info(f"Stream worker for {sensor_id} starting data collection loop...")
             node_addr_int = int(sensor_id)
             samples_received = 0
+            batches_sent = 0
+            accumulated_samples = []  # Accumulate samples before sending to callback
+            last_data_time = time.time()
+            no_data_warnings = 0
+            # NOTA: Preventive restart DESHABILITADO - unlimitedDuration(True) mantiene el sampling indefinidamente
+            # La API de MSCL Python no tiene stopSampling() en SyncSamplingNetwork
             
+            # DEBUG: Contador de iteraciones del loop
+            loop_iterations = 0
             while not stop_event.is_set():
+                loop_iterations += 1
+                
+                # DEBUG: Log cada 20 iteraciones (~10 segundos)
+                if loop_iterations % 20 == 0:
+                    LOGGER.info(f"Stream loop iteration #{loop_iterations} - Still receiving data...")
+                
                 # Get data from base station
+                LOGGER.debug(f"Calling getData() - iteration #{loop_iterations}")
                 sweeps = self.base_station.getData(500)  # 500ms timeout
+                LOGGER.debug(f"getData() returned {len(sweeps)} sweeps")
+                
+                # Check if we're receiving data
+                if len(sweeps) == 0:
+                    # No data received in this cycle
+                    time_since_last = time.time() - last_data_time
+                    if time_since_last > 10.0:  # 10 seconds without data
+                        no_data_warnings += 1
+                        if no_data_warnings % 5 == 1:  # Log every 5th warning (every ~50s)
+                            LOGGER.warning(f"No data from node {sensor_id} for {time_since_last:.1f}s - check hardware LED status")
+                else:
+                    # Reset timeout counter when we get data
+                    last_data_time = time.time()
+                    no_data_warnings = 0
                 
                 for sweep in sweeps:
                     if sweep.nodeAddress() != node_addr_int:
                         continue
                     
                     samples_received += 1
-                    if samples_received % 10 == 1:  # Log every 10th sweep
-                        LOGGER.info(f"Received sweep #{samples_received} from node {sensor_id}")
                     
                     # Extract data from sweep
                     timestamp = sweep.timestamp().seconds()  # Get seconds since epoch
@@ -193,12 +238,14 @@ class RealMSCLClient(MSCLClient):
                     num_channels = 3  # X, Y, Z
                     num_samples = len(data) // num_channels
                     
+                    if samples_received % 100 == 1:  # Log every 100th sweep
+                        LOGGER.info(f"Received sweep #{samples_received} from node {sensor_id}: {num_samples} samples, accumulated: {len(accumulated_samples)}")
+                    
                     if num_samples == 0:
                         LOGGER.warning(f"Sweep has {len(data)} data points, expected multiple of {num_channels}")
                         continue
                     
                     # Parse all samples in this sweep
-                    samples_list = []
                     for i in range(num_samples):
                         try:
                             # Get X, Y, Z for this sample
@@ -206,37 +253,38 @@ class RealMSCLClient(MSCLClient):
                             x = data[idx_base].as_float()
                             y = data[idx_base + 1].as_float()
                             z = data[idx_base + 2].as_float()
-                            samples_list.append([x, y, z])
+                            accumulated_samples.append([x, y, z])
                         except:
                             try:
                                 # Try as double
                                 x = data[idx_base].as_double()
                                 y = data[idx_base + 1].as_double()
                                 z = data[idx_base + 2].as_double()
-                                samples_list.append([x, y, z])
+                                accumulated_samples.append([x, y, z])
                             except Exception as parse_err:
                                 LOGGER.warning(f"Could not parse sample {i}: {parse_err}")
                                 continue
                     
-                    if not samples_list:
-                        continue
-                    
-                    # Create numpy array: shape (num_samples, 3)
-                    acc_data = np.array(samples_list, dtype=np.float64)
-                    
-                    # Log first sweep details
-                    if samples_received == 1:
-                        LOGGER.info(f"First sweep: {num_samples} samples, shape {acc_data.shape}")
-                    
-                    sample = Sample(
-                        sensor_id=sensor_id,
-                        stay_id=info.stay_id,
-                        fs_hz=info.sample_rate_hz,
-                        timestamp=timestamp,
-                        acceleration_g=acc_data
-                    )
-                    
-                    callback(sample)
+                    # Send accumulated samples in batches (every ~128 samples or ~1 second worth)
+                    if len(accumulated_samples) >= 128:
+                        # Create numpy array: shape (num_samples, 3)
+                        acc_data = np.array(accumulated_samples, dtype=np.float64)
+                        
+                        batches_sent += 1
+                        # Log first 10 batches
+                        if batches_sent <= 10:
+                            LOGGER.info(f"Batch #{batches_sent}: {len(accumulated_samples)} samples, shape {acc_data.shape}")
+                        
+                        sample = Sample(
+                            sensor_id=sensor_id,
+                            stay_id=info.stay_id,
+                            fs_hz=info.sample_rate_hz,
+                            timestamp=timestamp,
+                            acceleration_g=acc_data
+                        )
+                        
+                        callback(sample)
+                        accumulated_samples = []  # Reset accumulator
                 
                 time.sleep(0.01)  # Small delay to prevent CPU spinning
                 
@@ -253,41 +301,136 @@ class RealMSCLClient(MSCLClient):
             #     LOGGER.warning(f"Failed to stop node {sensor_id}: {e}")
     
     def _configure_and_start_node(self, node: mscl.WirelessNode, sample_rate_hz: float) -> None:
-        """Configure and start sampling on a node."""
+        """Configure and start sampling using SyncSamplingNetwork with multiple retry strategies."""
+        
+        # Strategy 1: Try with existing SyncSamplingNetwork (if already created)
         try:
-            # Create basic config without reading from node
-            config = mscl.WirelessNodeConfig()
+            if self._sync_network is None:
+                LOGGER.info("Creating SyncSamplingNetwork...")
+                self._sync_network = mscl.SyncSamplingNetwork(self.base_station)
             
-            # Set sampling mode to sync sampling
-            config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
-            
-            # Configure active channels (accelerometer X, Y, Z)
-            channels = mscl.ChannelMask()
-            channels.enable(mscl.WirelessChannel.channel_1)  # X axis
-            channels.enable(mscl.WirelessChannel.channel_2)  # Y axis  
-            channels.enable(mscl.WirelessChannel.channel_3)  # Z axis
-            config.activeChannels(channels)
-            
-            # Map sample rate to MSCL enum
-            if sample_rate_hz == 512:
-                config.sampleRate(mscl.WirelessTypes.sampleRate_512Hz)
-            elif sample_rate_hz == 256:
-                config.sampleRate(mscl.WirelessTypes.sampleRate_256Hz)
-            elif sample_rate_hz == 128:
-                config.sampleRate(mscl.WirelessTypes.sampleRate_128Hz)
-            else:
-                LOGGER.warning(f"Unsupported sample rate {sample_rate_hz}, using 256Hz")
-                config.sampleRate(mscl.WirelessTypes.sampleRate_256Hz)
-            
-            # Apply configuration
-            node.applyConfig(config)
-            LOGGER.info(f"Node {node.nodeAddress()} configured for {sample_rate_hz}Hz sampling")
-            
-            # Start sampling
-            node.startSyncSampling()
-            LOGGER.info(f"Node {node.nodeAddress()} started sync sampling")
-            
+            if not self._sync_network_started:
+                LOGGER.info(f"Adding node {node.nodeAddress()} to sync network...")
+                
+                # Give the node time to be ready
+                time.sleep(1.0)
+                
+                # PASO 1: DETENER CUALQUIER SESIÓN DE MUESTREO EXISTENTE
+                try:
+                    LOGGER.info(f"Stopping any existing sampling session on node {node.nodeAddress()}...")
+                    idle_status = node.setToIdle()
+                    
+                    # Esperar a que complete
+                    timeout_counter = 0
+                    while not idle_status.complete() and timeout_counter < 50:  # 5 segundos max
+                        time.sleep(0.1)
+                        timeout_counter += 1
+                    
+                    if idle_status.result() == mscl.SetToIdleStatus.setToIdleResult_success:
+                        LOGGER.info("Node successfully set to IDLE - ready for new configuration")
+                    else:
+                        LOGGER.warning(f"setToIdle result: {idle_status.result()}")
+                        LOGGER.info("Proceeding with configuration anyway...")
+                        
+                except Exception as idle_err:
+                    LOGGER.warning(f"Could not set node to idle: {idle_err}")
+                    LOGGER.info("Node may already be idle, proceeding with configuration...")
+                
+                # PASO 2: CONFIGURAR EL NODO (ahora que está en IDLE)
+                try:
+                    LOGGER.info(f"Configuring node {node.nodeAddress()} for continuous sync sampling...")
+                    
+                    # Crear nueva configuración
+                    node_config = mscl.WirelessNodeConfig()
+                    
+                    # CRÍTICO: Modo de muestreo sincronizado
+                    node_config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
+                    LOGGER.info("Set sampling mode: SYNC")
+                    
+                    # Configurar frecuencia de muestreo (son constantes, no funciones)
+                    if sample_rate_hz == 512:
+                        node_config.sampleRate(mscl.WirelessTypes.sampleRate_512Hz)
+                    elif sample_rate_hz == 256:
+                        node_config.sampleRate(mscl.WirelessTypes.sampleRate_256Hz)
+                    elif sample_rate_hz == 128:
+                        node_config.sampleRate(mscl.WirelessTypes.sampleRate_128Hz)
+                    else:
+                        LOGGER.warning(f"Unsupported sample rate {sample_rate_hz}Hz, using 256Hz")
+                        node_config.sampleRate(mscl.WirelessTypes.sampleRate_256Hz)
+                    
+                    # CRÍTICO: Habilitar duración ilimitada
+                    node_config.unlimitedDuration(True)
+                    LOGGER.info(f"Set unlimitedDuration=True for continuous sampling")
+                    
+                    # Habilitar canales del acelerómetro (X, Y, Z)
+                    channels = mscl.ChannelMask()
+                    channels.enable(mscl.WirelessChannel.channel_1)  # X
+                    channels.enable(mscl.WirelessChannel.channel_2)  # Y
+                    channels.enable(mscl.WirelessChannel.channel_3)  # Z
+                    node_config.activeChannels(channels)
+                    LOGGER.info("Enabled accelerometer channels: X, Y, Z")
+                    
+                    # PASO 3: APLICAR configuración al nodo
+                    node.applyConfig(node_config)
+                    LOGGER.info(f"Node {node.nodeAddress()} configured: SYNC mode, {sample_rate_hz}Hz, unlimited duration")
+                    
+                    # PASO 4: VERIFICAR configuración aplicada
+                    try:
+                        actual_rate = node.getSampleRate()
+                        actual_unlimited = node.getUnlimitedDuration()
+                        LOGGER.info(f"Verified config - Rate: {actual_rate}, Unlimited: {actual_unlimited}")
+                    except Exception as verify_err:
+                        LOGGER.warning(f"Could not verify configuration: {verify_err}")
+                    
+                except AttributeError as attr_err:
+                    LOGGER.warning(f"Node configuration API not available: {attr_err}")
+                    LOGGER.info("Will proceed without explicit configuration")
+                except Exception as config_err:
+                    LOGGER.error(f"Failed to configure node: {config_err}")
+                    LOGGER.info("Will attempt to start with default/existing configuration")
+                
+                # PASO 5: AGREGAR el nodo a la red de sincronización
+                self._sync_network.addNode(node)
+                LOGGER.info(f"Node {node.nodeAddress()} added to sync network")
+                
+                # PASO 6: CONFIGURAR modo lossless
+                try:
+                    LOGGER.info("Configuring lossless mode...")
+                    self._sync_network.lossless(True)
+                    LOGGER.info("Lossless mode enabled!")
+                except Exception as lossless_err:
+                    LOGGER.warning(f"Could not enable lossless mode: {lossless_err}")
+                
+                # PASO 7: APLICAR configuración de la red
+                LOGGER.info("Applying sync network configuration...")
+                self._sync_network.applyConfiguration()
+                LOGGER.info("Sync network configuration applied")
+                
+                # PASO 8: INICIAR muestreo
+                LOGGER.info("Starting sync sampling network...")
+                self._sync_network.startSampling()
+                self._sync_network_started = True
+                LOGGER.info("SUCCESS: Sync sampling network started - continuous @ {sample_rate_hz}Hz!")
+                return  # Success!
+                
         except Exception as e:
-            LOGGER.error(f"Failed to configure/start node: {e}")
-            raise
-            raise
+            LOGGER.error(f"Failed to configure/start sync network: {e}")
+            LOGGER.info("Will attempt alternative initialization method...")
+            
+        # Strategy 2: Try to use node's individual startSyncSampling
+        try:
+            LOGGER.info(f"Trying individual node.startSyncSampling() for node {node.nodeAddress()}...")
+            # Some MSCL versions support starting sync sampling directly on the node
+            node.startSyncSampling()
+            self._sync_network_started = True
+            LOGGER.info("SUCCESS: Node sync sampling started individually!")
+            return  # Success!
+        except AttributeError:
+            LOGGER.info("Node does not support individual startSyncSampling()")
+        except Exception as e:
+            LOGGER.warning(f"Individual sync sampling failed: {e}")
+        
+        # Strategy 3: Check if network is already running from external source
+        LOGGER.info("Checking if SyncSamplingNetwork is already active from external source (e.g., SensorConnect)...")
+        LOGGER.info("Application will attempt to read data from existing sampling session")
+        # Don't raise - let it try to read data anyway
