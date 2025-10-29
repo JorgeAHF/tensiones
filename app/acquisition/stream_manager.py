@@ -12,6 +12,7 @@ from typing import Deque, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 
 from app.acquisition.mscl_client import GatewayStatus, MSCLClient, Sample, SensorInfo
+from app.acquisition.rolling_recorder import RollingRecorder
 from app.analysis.filters import BandpassConfig, preprocess
 from app.analysis.spectral import FrequencyEstimator, PeakDetectionResult, WelchConfig
 from app.analysis.tension import TensionResult, estimate_tension
@@ -239,6 +240,16 @@ class StreamManager:
         self.guided_f1: Dict[str, Optional[float]] = {}
         self.guided_tol: Dict[str, float] = {}
         self._lock = threading.Lock()
+        
+        # 🎬 Rolling Recorder para grabación automática continua
+        self.rolling_recorder = RollingRecorder(
+            output_dir=str(storage_base / "playback"),
+            buffer_duration_sec=120,  # 2 minutos
+            sample_rate_hz=256,
+            save_interval_sec=30  # Guardar cada 30 segundos
+        )
+        logger.info("✅ RollingRecorder activado - grabación automática habilitada")
+        
         try:
             self._gateway_status = self.client.gateway_status()
         except Exception as exc:  # pragma: no cover - defensive
@@ -426,6 +437,8 @@ class StreamManager:
 
         timestamps = start_time + np.arange(len(sample.acceleration_g)) * dt
         records = []
+        rolling_samples = []  # 🎬 Para el RollingRecorder
+        
         for idx, accel in enumerate(sample.acceleration_g):
             epoch = start_time + idx * dt
             ts_local_dt = datetime.fromtimestamp(epoch, tz=DEFAULT_TZ)
@@ -444,7 +457,13 @@ class StreamManager:
                     accel[2],
                 ]
             )
+            # 🎬 Agregar al RollingRecorder (timestamp, node_id, x, y, z)
+            rolling_samples.append((epoch, sensor_id, accel[0], accel[1], accel[2]))
+        
         self._accel_writer.writerows(records)
+        
+        # 🎬 Enviar muestras al RollingRecorder para grabación automática
+        self.rolling_recorder.add_samples(rolling_samples)
 
         buffer = self.buffers[sensor_id]
         buffer.extend(sample.acceleration_g, start_time, dt)
