@@ -1747,6 +1747,7 @@ class DashApp:
         
         @app.callback(
             Output("monitor-graph", "figure"),
+            Output("monitor-playback-index", "data"),  # ← AGREGAR para actualizar el Store
             Input("monitor-playback-interval", "n_intervals"),
             State("monitor-playback-index", "data"),
             prevent_initial_call=True,
@@ -1756,23 +1757,23 @@ class DashApp:
             if not self.monitor_playback_data:
                 fig = go.Figure()
                 fig.update_layout(title="Esperando datos...", template="plotly_white", height=600)
-                return fig
+                return fig, playback_index or 0  # ← RETORNAR índice
             
-            # Incrementar índice (reproducir más muestras cada frame)
+            # USAR playback_index del parámetro, NO self.monitor_playback_index
             samples_per_frame = 13  # ~256 Hz / 20 FPS = 13 samples/frame
-            self.monitor_playback_index += samples_per_frame
+            new_index = (playback_index or 0) + samples_per_frame
             
             max_index = len(self.monitor_playback_data)
-            if self.monitor_playback_index >= max_index:
-                self.monitor_playback_index = max_index  # Detener al final
+            if new_index >= max_index:
+                new_index = max_index  # Detener al final
             
             # Obtener datos hasta el índice actual
-            current_data = self.monitor_playback_data[:self.monitor_playback_index]
+            current_data = self.monitor_playback_data[:new_index]
             
             if not current_data:
                 fig = go.Figure()
                 fig.update_layout(title="Iniciando reproducción...", template="plotly_white", height=600)
-                return fig
+                return fig, new_index
             
             # Separar componentes
             times = [d[0] for d in current_data]
@@ -1798,7 +1799,7 @@ class DashApp:
                 line=dict(color='#2ecc71', width=1.5),
             ))
             
-            progress = (self.monitor_playback_index / max_index) * 100 if max_index > 0 else 0
+            progress = (new_index / max_index) * 100 if max_index > 0 else 0
             
             fig.update_layout(
                 title=f"Reproducción - {len(current_data)} muestras ({progress:.1f}%)",
@@ -1811,7 +1812,7 @@ class DashApp:
                 uirevision='monitor-graph',
             )
             
-            return fig
+            return fig, new_index  # ← RETORNAR AMBOS (figura, nuevo_índice)
         
         @app.callback(
             Output("monitor-recording-active", "data", allow_duplicate=True),
