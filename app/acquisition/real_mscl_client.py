@@ -2,11 +2,12 @@
 import logging
 import threading
 import time
-from typing import List, Dict, Any, Callable, Iterable
+from typing import List, Dict, Any, Callable, Iterable, Optional
 from dataclasses import dataclass
 import numpy as np
 import mscl
 from app.acquisition.mscl_client import MSCLClient, GatewayStatus, SensorInfo, Sample
+from app.acquisition.streaming_coordinator import StreamingCoordinator
 
 LOGGER = logging.getLogger(__name__)
 
@@ -14,10 +15,17 @@ LOGGER = logging.getLogger(__name__)
 class RealMSCLClient(MSCLClient):
     """Wrapper for real MSCL BaseStation and WirelessNodes."""
     
-    def __init__(self, base_station: mscl.BaseStation, sensor_configs: List[Dict[str, Any]], default_fs: float):
+    def __init__(
+        self, 
+        base_station: mscl.BaseStation, 
+        sensor_configs: List[Dict[str, Any]], 
+        default_fs: float,
+        streaming_coordinator: Optional[StreamingCoordinator] = None
+    ):
         self.base_station = base_station
         self.sensor_configs = sensor_configs
         self.default_fs = default_fs
+        self.streaming_coordinator = streaming_coordinator
         self.nodes = {}
         self._sensors = {}  # Dict[str, SensorInfo]
         self._threads: Dict[str, threading.Thread] = {}
@@ -26,6 +34,10 @@ class RealMSCLClient(MSCLClient):
         self._sync_network = None  # Will hold SyncSamplingNetwork
         self._sync_network_started = False
         self._gateway_status = GatewayStatus(host="192.168.8.101", port=5000, connected=True, message="Connected to real MSCL Gateway")
+        
+        if self.streaming_coordinator:
+            LOGGER.info("✅ RealMSCLClient integrado con StreamingCoordinator")
+        
         self._initialize_nodes()
     
     def _initialize_nodes(self):
@@ -275,6 +287,17 @@ class RealMSCLClient(MSCLClient):
                         if batches_sent <= 10:
                             LOGGER.info(f"Batch #{batches_sent}: {len(accumulated_samples)} samples, shape {acc_data.shape}")
                         
+                        # NUEVO: Enviar datos al StreamingCoordinator (desacoplado)
+                        if self.streaming_coordinator:
+                            # Calcular timestamps individuales para cada muestra
+                            dt = 1.0 / info.sample_rate_hz  # Delta tiempo entre muestras
+                            samples_for_coordinator = [
+                                (timestamp + i * dt, x, y, z)
+                                for i, (x, y, z) in enumerate(accumulated_samples)
+                            ]
+                            self.streaming_coordinator.add_samples_batch(sensor_id, samples_for_coordinator)
+                        
+                        # EXISTENTE: Mantener callback para compatibilidad con StreamManager
                         sample = Sample(
                             sensor_id=sensor_id,
                             stay_id=info.stay_id,
