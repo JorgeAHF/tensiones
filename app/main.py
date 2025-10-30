@@ -133,6 +133,23 @@ def main() -> None:
         sample_rate_hz=256
     )
     LOGGER.info("[OK] StreamingCoordinator creado")
+    
+    # Intentar inicializar InfluxDB writer (opcional)
+    influxdb_writer = None
+    influxdb_config = app_config.get("influxdb", {})
+    if influxdb_config.get("enabled", False):
+        try:
+            from app.storage.influxdb_writer import InfluxDBWriter
+            influxdb_writer = InfluxDBWriter(
+                url=influxdb_config.get("url", "http://localhost:8086"),
+                token=influxdb_config.get("token"),
+                org=influxdb_config.get("org", "imt"),
+                bucket=influxdb_config.get("bucket", "python"),
+            )
+            LOGGER.info("[OK] InfluxDB writer inicializado")
+        except Exception as e:
+            LOGGER.warning(f"[INFLUXDB] No se pudo inicializar InfluxDB: {e}")
+            influxdb_writer = None
 
     client = create_client(app_config, stays, streaming_coordinator)
     realtime_store = RealtimeDataStore()
@@ -144,6 +161,7 @@ def main() -> None:
         storage_base=storage_base,
         realtime_store=realtime_store,
         streaming_coordinator=streaming_coordinator,
+        influxdb_writer=influxdb_writer,
     )
     gateway_cfg = app_config.get("mscl_gateway", {})
     if gateway_cfg.get("auto_connect", False):

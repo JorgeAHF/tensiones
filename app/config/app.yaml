@@ -24,3 +24,12 @@ timezone: America/Mexico_City
 ui:
   history_hours: 1
   refresh_ms: 500
+influxdb:
+  enabled: true
+  url: http://localhost:8086
+  token: 3hQ1WFHJP8zJjegPoby8JbxsFEdwrUzEM0XuSdQ-4VogBxdWlPCnwUIkQAvqW0kT-8SVOSSQl2T1cmNA4o5Y9Q==
+  org: imt
+  bucket: python
+grafana:
+  url: http://localhost:3000
+  dashboard_uid: adwxmbh

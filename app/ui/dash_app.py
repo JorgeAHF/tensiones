@@ -829,12 +829,97 @@ class DashApp:
                 ),
             ],
         )
+        
+        # Nueva pestaña: Análisis Histórico con Grafana
+        grafana_config = self.app_config.get("grafana", {})
+        grafana_url = grafana_config.get("url", "http://localhost:3000")
+        dashboard_uid = grafana_config.get("dashboard_uid", "adwxmbh")
+        grafana_tab = dbc.Tab(
+            label="Análisis Histórico",
+            tab_id="grafana",
+            children=[
+                dbc.Card(
+                    [
+                        dbc.CardHeader("Visualización Histórica con Grafana"),
+                        dbc.CardBody(
+                            [
+                                dbc.Alert(
+                                    [
+                                        html.I(className="bi bi-info-circle-fill me-2"),
+                                        "Los datos de los sensores se almacenan automáticamente en InfluxDB y pueden visualizarse en Grafana para análisis histórico.",
+                                    ],
+                                    color="info",
+                                    className="mb-3",
+                                ),
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                html.H5("Acceso a Grafana", className="mb-3"),
+                                                html.P("Haz clic en los botones para abrir Grafana en una nueva pestaña:"),
+                                                dbc.ButtonGroup(
+                                                    [
+                                                        dbc.Button(
+                                                            [html.I(className="bi bi-bar-chart-line me-2"), "Dashboard Principal"],
+                                                            href=f"{grafana_url}/d/{dashboard_uid}",
+                                                            target="_blank",
+                                                            color="primary",
+                                                            size="lg",
+                                                        ),
+                                                        dbc.Button(
+                                                            [html.I(className="bi bi-gear me-2"), "Configuración"],
+                                                            href=f"{grafana_url}",
+                                                            target="_blank",
+                                                            color="secondary",
+                                                            size="lg",
+                                                        ),
+                                                    ],
+                                                    className="mb-4",
+                                                ),
+                                            ],
+                                            md=6,
+                                        ),
+                                        dbc.Col(
+                                            [
+                                                html.H5("Información", className="mb-3"),
+                                                dbc.ListGroup(
+                                                    [
+                                                        dbc.ListGroupItem([
+                                                            html.Strong("URL: "),
+                                                            html.Code(grafana_url),
+                                                        ]),
+                                                        dbc.ListGroupItem([
+                                                            html.Strong("Dashboard: "),
+                                                            html.Code(dashboard_uid),
+                                                        ]),
+                                                        dbc.ListGroupItem([
+                                                            html.Strong("Base de datos: "),
+                                                            "InfluxDB (localhost:8086)",
+                                                        ]),
+                                                        dbc.ListGroupItem([
+                                                            html.Strong("Retención: "),
+                                                            "Datos históricos completos",
+                                                        ]),
+                                                    ],
+                                                ),
+                                            ],
+                                            md=6,
+                                        ),
+                                    ],
+                                ),
+                            ]
+                        ),
+                    ],
+                    className="mb-4 shadow-sm",
+                ),
+            ],
+        )
 
         self.dash_app.layout = dbc.Container(
             [
                 html.H1("MSCL Tension Platform", className="mb-4 fw-bold"),
                 dbc.Tabs(
-                    [network_tab, realtime_tab, config_tab, accel_tab],
+                    [network_tab, realtime_tab, config_tab, accel_tab, grafana_tab],
                     id="tabs",
                     active_tab="network",
                     className="mb-4",

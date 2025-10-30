@@ -227,6 +227,7 @@ class StreamManager:
         storage_base: Path,
         realtime_store: RealtimeDataStore,
         streaming_coordinator: Optional[StreamingCoordinator] = None,
+        influxdb_writer: Optional[Any] = None,
     ) -> None:
         self.client = client
         self.analysis_cfg = analysis_cfg
@@ -234,6 +235,7 @@ class StreamManager:
         self.storage_base = storage_base
         self.realtime_store = realtime_store
         self.streaming_coordinator = streaming_coordinator
+        self.influxdb_writer = influxdb_writer
         self.stays = {stay.sensor_id: stay for stay in stays}
         self.sensors: Dict[str, SensorState] = {}
         self.buffers: Dict[str, SensorBuffer] = {}
@@ -250,6 +252,9 @@ class StreamManager:
         
         if self.streaming_coordinator:
             logger.info("[OK] StreamManager integrado con StreamingCoordinator")
+        
+        if self.influxdb_writer:
+            logger.info("[OK] StreamManager integrado con InfluxDB")
         
         try:
             self._gateway_status = self.client.gateway_status()
@@ -662,6 +667,21 @@ class StreamManager:
             (freqs, psd),
             AccelerationRecord(timestamps=ts_arr, samples=samples),
         )
+        
+        # Escribir a InfluxDB si está disponible
+        if self.influxdb_writer and tension.tension_newton is not None:
+            try:
+                # Calcular aceleración promedio de la última muestra
+                last_accel = sample.acceleration_g[-1] if len(sample.acceleration_g) > 0 else np.array([0, 0, 0])
+                self.influxdb_writer.write_sensor_data(
+                    sensor_id=sensor_id,
+                    timestamp=window_end_dt,
+                    acceleration={'x': float(last_accel[0]), 'y': float(last_accel[1]), 'z': float(last_accel[2])},
+                    tension=float(tension.tension_newton),
+                    frequency=float(result.f1_hz) if result.f1_hz is not None else None,
+                )
+            except Exception as e:
+                logger.warning(f"[INFLUXDB] Failed to write data for {sensor_id}: {e}")
 
         local_ts, utc_ts = now_local_utc()
         tension_row = [
