@@ -145,22 +145,26 @@ def load_persisted_tension(
 
 
 def _analysis_to_figures(analysis_state):
+    """Convert pre-calculated analysis data to Plotly figures (READ-ONLY).
+    
+    This function ONLY reads from RealtimeDataStore - NO FFT processing.
+    All analysis (PSD, frequency detection, tension calculation) is done
+    by the dedicated FFT thread in StreamManager.
+    """
     if analysis_state is None:
         return go.Figure(), go.Figure(), []
+    
+    # Gráfica de aceleración (solo renderizado)
     accel_records = list(analysis_state.recent_accel)
     if accel_records:
-        timestamps = accel_records[-1].timestamps
-        samples = accel_records[-1].samples
+        last_record = accel_records[-1]
+        timestamps = last_record.timestamps
+        samples = last_record.samples
         fig_time = go.Figure()
-        time_axis = [
-            datetime.fromtimestamp(float(ts), tz=DEFAULT_TZ)
-            if not isinstance(ts, datetime)
-            else ts
-            for ts in timestamps
-        ]
-        fig_time.add_trace(go.Scatter(x=time_axis, y=samples[:, 0], mode="lines", name="Ax"))
-        fig_time.add_trace(go.Scatter(x=time_axis, y=samples[:, 1], mode="lines", name="Ay"))
-        fig_time.add_trace(go.Scatter(x=time_axis, y=samples[:, 2], mode="lines", name="Az"))
+        # Timestamps ya vienen como datetime del coordinator
+        fig_time.add_trace(go.Scatter(x=timestamps, y=samples[:, 0], mode="lines", name="Ax"))
+        fig_time.add_trace(go.Scatter(x=timestamps, y=samples[:, 1], mode="lines", name="Ay"))
+        fig_time.add_trace(go.Scatter(x=timestamps, y=samples[:, 2], mode="lines", name="Az"))
         fig_time.update_layout(
             title="Aceleración reciente",
             xaxis_title="Tiempo",
@@ -170,6 +174,7 @@ def _analysis_to_figures(analysis_state):
     else:
         fig_time = go.Figure()
 
+    # Gráfica PSD (ya calculada por FFT thread)
     psd = analysis_state.psd_cache
     if psd is not None:
         freqs, power = psd
@@ -187,10 +192,12 @@ def _analysis_to_figures(analysis_state):
     else:
         fig_psd = go.Figure()
 
+    # Historial (solo extracción de datos)
     history_points = []
     for timestamp, tension, qa in analysis_state.history:
         if tension.tension_kN is not None:
             history_points.append((timestamp, tension.tension_kN, qa.flag.value))
+    
     return fig_time, fig_psd, history_points
 
 

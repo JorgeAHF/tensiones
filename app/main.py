@@ -132,7 +132,7 @@ def main() -> None:
         buffer_duration_sec=60,
         sample_rate_hz=256
     )
-    LOGGER.info("✅ StreamingCoordinator creado")
+    LOGGER.info("[OK] StreamingCoordinator creado")
 
     client = create_client(app_config, stays, streaming_coordinator)
     realtime_store = RealtimeDataStore()

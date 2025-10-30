@@ -54,7 +54,7 @@ class SensorBuffer:
         self.last_sample_time = 0.0
         
         logger.info(
-            f"📦 SensorBuffer creado para {sensor_id}: "
+            f"[BUFFER] SensorBuffer creado para {sensor_id}: "
             f"capacidad={max_samples} samples ({duration_sec}s @ {sample_rate_hz}Hz)"
         )
     
@@ -130,7 +130,7 @@ class SensorBuffer:
         """Limpia el buffer (thread-safe)."""
         with self.lock:
             self.buffer.clear()
-            logger.info(f"🗑️ Buffer limpiado para sensor {self.sensor_id}")
+            logger.info(f"[CLEAN] Buffer limpiado para sensor {self.sensor_id}")
 
 
 class StreamingCoordinator:
@@ -156,7 +156,7 @@ class StreamingCoordinator:
         self._buffers_lock = Lock()
         
         logger.info(
-            f"🎛️ StreamingCoordinator inicializado: "
+            f"[COORDINATOR] StreamingCoordinator inicializado: "
             f"buffer={buffer_duration_sec}s, fs={sample_rate_hz}Hz"
         )
     
@@ -286,7 +286,7 @@ class StreamingCoordinator:
         with self._buffers_lock:
             for buffer in self._buffers.values():
                 buffer.clear()
-            logger.info("🗑️ Todos los buffers limpiados")
+            logger.info("[CLEAN] Todos los buffers limpiados")
 
 
 __all__ = ["StreamingCoordinator", "SensorBuffer", "AccelSample"]

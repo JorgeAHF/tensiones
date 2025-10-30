@@ -36,7 +36,7 @@ class RealMSCLClient(MSCLClient):
         self._gateway_status = GatewayStatus(host="192.168.8.101", port=5000, connected=True, message="Connected to real MSCL Gateway")
         
         if self.streaming_coordinator:
-            LOGGER.info("✅ RealMSCLClient integrado con StreamingCoordinator")
+            LOGGER.info("[OK] RealMSCLClient integrado con StreamingCoordinator")
         
         self._initialize_nodes()
     

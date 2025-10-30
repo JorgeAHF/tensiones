@@ -249,7 +249,7 @@ class StreamManager:
         self._processing_interval_sec = 1.0  # Calcular tensión cada 1 segundo
         
         if self.streaming_coordinator:
-            logger.info("✅ StreamManager integrado con StreamingCoordinator")
+            logger.info("[OK] StreamManager integrado con StreamingCoordinator")
         
         try:
             self._gateway_status = self.client.gateway_status()
@@ -443,7 +443,7 @@ class StreamManager:
             name="FFT-Processor"
         )
         self._processing_thread.start()
-        logger.info(f"🔄 Thread de procesamiento FFT iniciado (intervalo={self._processing_interval_sec}s)")
+        logger.info(f"[FFT] Thread de procesamiento FFT iniciado (intervalo={self._processing_interval_sec}s)")
     
     def stop_fft_processing(self) -> None:
         """Detiene thread de procesamiento FFT."""
@@ -454,7 +454,7 @@ class StreamManager:
         self._processing_stop_event.set()
         self._processing_thread.join(timeout=3.0)
         self._processing_thread = None
-        logger.info("✅ Thread de procesamiento FFT detenido")
+        logger.info("[FFT] Thread de procesamiento FFT detenido")
     
     def _fft_processing_worker(self) -> None:
         """Worker thread que procesa FFT cada intervalo configurado."""
@@ -539,14 +539,8 @@ class StreamManager:
                 mass_density=stay.mass_density,
             )
             
-            # Quality assessment
+            # Quality assessment - already handled by spectral estimator
             qa = result.quality
-            if tension.tension_kN is not None:
-                tension_thresholds = stay.thresholds
-                if tension.tension_kN < tension_thresholds.t_kn_min:
-                    qa.warn("TENSION_LOW", f"T={tension.tension_kN:.1f} kN < {tension_thresholds.t_kn_min}")
-                elif tension.tension_kN > tension_thresholds.t_kn_max:
-                    qa.warn("TENSION_HIGH", f"T={tension.tension_kN:.1f} kN > {tension_thresholds.t_kn_max}")
             
             # Almacenar resultados en RealtimeDataStore
             now_utc, now_local = now_local_utc()
@@ -569,7 +563,7 @@ class StreamManager:
                 stay.stay_id,
                 sensor_id,
                 result.f1_hz,
-                tension.tension_N,
+                tension.tension_newton,
                 tension.tension_kN,
                 result.snr_db,
                 result.peak_prominence,
