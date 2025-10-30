@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import csv
 import logging
-import threading
 import time
 from datetime import date, datetime
 from pathlib import Path
