@@ -12,7 +12,7 @@ from typing import Deque, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 
 from app.acquisition.mscl_client import GatewayStatus, MSCLClient, Sample, SensorInfo
-from app.acquisition.rolling_recorder import RollingRecorder
+from app.acquisition.streaming_coordinator import StreamingCoordinator
 from app.analysis.filters import BandpassConfig, preprocess
 from app.analysis.spectral import FrequencyEstimator, PeakDetectionResult, WelchConfig
 from app.analysis.tension import TensionResult, estimate_tension
@@ -226,12 +226,14 @@ class StreamManager:
         rotation_cfg: Dict,
         storage_base: Path,
         realtime_store: RealtimeDataStore,
+        streaming_coordinator: Optional[StreamingCoordinator] = None,
     ) -> None:
         self.client = client
         self.analysis_cfg = analysis_cfg
         self.rotation_cfg = rotation_cfg
         self.storage_base = storage_base
         self.realtime_store = realtime_store
+        self.streaming_coordinator = streaming_coordinator
         self.stays = {stay.sensor_id: stay for stay in stays}
         self.sensors: Dict[str, SensorState] = {}
         self.buffers: Dict[str, SensorBuffer] = {}
@@ -241,14 +243,13 @@ class StreamManager:
         self.guided_tol: Dict[str, float] = {}
         self._lock = threading.Lock()
         
-        # 🎬 Rolling Recorder para grabación automática continua
-        self.rolling_recorder = RollingRecorder(
-            output_dir=str(storage_base / "playback"),
-            buffer_duration_sec=120,  # 2 minutos
-            sample_rate_hz=256,
-            save_interval_sec=30  # Guardar cada 30 segundos
-        )
-        logger.info("✅ RollingRecorder activado - grabación automática habilitada")
+        # Thread dedicado para procesamiento FFT en background
+        self._processing_thread: Optional[threading.Thread] = None
+        self._processing_stop_event = threading.Event()
+        self._processing_interval_sec = 1.0  # Calcular tensión cada 1 segundo
+        
+        if self.streaming_coordinator:
+            logger.info("✅ StreamManager integrado con StreamingCoordinator")
         
         try:
             self._gateway_status = self.client.gateway_status()
@@ -424,6 +425,163 @@ class StreamManager:
     def stop_all(self) -> None:
         for sensor_id in list(self.stays):
             self.stop(sensor_id)
+    
+    def start_fft_processing(self) -> None:
+        """Inicia thread dedicado para procesamiento FFT en background."""
+        if self._processing_thread is not None and self._processing_thread.is_alive():
+            logger.warning("Thread de procesamiento FFT ya está corriendo")
+            return
+        
+        if not self.streaming_coordinator:
+            logger.warning("No se puede iniciar procesamiento FFT sin StreamingCoordinator")
+            return
+        
+        self._processing_stop_event.clear()
+        self._processing_thread = threading.Thread(
+            target=self._fft_processing_worker,
+            daemon=True,
+            name="FFT-Processor"
+        )
+        self._processing_thread.start()
+        logger.info(f"🔄 Thread de procesamiento FFT iniciado (intervalo={self._processing_interval_sec}s)")
+    
+    def stop_fft_processing(self) -> None:
+        """Detiene thread de procesamiento FFT."""
+        if self._processing_thread is None:
+            return
+        
+        logger.info("Deteniendo thread de procesamiento FFT...")
+        self._processing_stop_event.set()
+        self._processing_thread.join(timeout=3.0)
+        self._processing_thread = None
+        logger.info("✅ Thread de procesamiento FFT detenido")
+    
+    def _fft_processing_worker(self) -> None:
+        """Worker thread que procesa FFT cada intervalo configurado."""
+        logger.info("Worker FFT iniciado - procesando datos del StreamingCoordinator")
+        
+        import time
+        
+        while not self._processing_stop_event.is_set():
+            try:
+                # Obtener lista de sensores activos
+                active_sensors = self.streaming_coordinator.get_all_sensor_ids()
+                
+                for sensor_id in active_sensors:
+                    # Verificar que el sensor esté configurado
+                    if sensor_id not in self.stays:
+                        continue
+                    
+                    if sensor_id not in self.buffers:
+                        continue
+                    
+                    # Procesar datos de este sensor
+                    self._process_sensor_fft(sensor_id)
+                
+                # Esperar antes del siguiente ciclo
+                self._processing_stop_event.wait(self._processing_interval_sec)
+                
+            except Exception as e:
+                logger.error(f"Error en worker FFT: {e}", exc_info=True)
+                time.sleep(1.0)  # Esperar antes de reintentar
+        
+        logger.info("Worker FFT finalizado")
+    
+    def _process_sensor_fft(self, sensor_id: str) -> None:
+        """Procesa FFT para un sensor específico leyendo del StreamingCoordinator."""
+        try:
+            # Obtener ventana de datos del coordinator
+            window_sec = self.analysis_cfg.get("window_sec", 30)
+            n_samples = int(window_sec * 256)  # Asumir 256 Hz por defecto
+            
+            samples = self.streaming_coordinator.get_latest_data(sensor_id, n_samples)
+            
+            if len(samples) < 256:  # Mínimo 1 segundo de datos
+                return
+            
+            # Convertir a formato que espera el análisis
+            timestamps = np.array([s.timestamp for s in samples])
+            accel_data = np.array([[s.x, s.y, s.z] for s in samples])
+            
+            # Calcular magnitud
+            magnitude = np.linalg.norm(accel_data, axis=1)
+            
+            # Obtener configuración del sensor
+            stay = self.stays[sensor_id]
+            estimator = self.estimators[sensor_id]
+            
+            # Preprocesar (filtro pasa-banda)
+            bp = self._make_bandpass()
+            try:
+                processed = preprocess(magnitude, 256.0, bp)  # TODO: obtener fs real
+            except ValueError:
+                processed = magnitude
+            
+            # Calcular PSD
+            freqs, psd = estimator.power_spectral_density(processed)
+            
+            # Estimar frecuencia fundamental
+            result = estimator.estimate(
+                processed,
+                mode=self.mode.get(sensor_id, "AUTO"),
+                guided_f1=self.guided_f1.get(sensor_id),
+                tolerance=self.guided_tol.get(sensor_id, 0.1),
+            )
+            
+            # Calcular tensión
+            tension = estimate_tension(
+                result.f1_hz,
+                mode="physical"
+                if (stay.length_m is not None and stay.mass_density is not None)
+                else "K",
+                k_coefficient=stay.k_coefficient,
+                length_m=stay.length_m,
+                mass_density=stay.mass_density,
+            )
+            
+            # Quality assessment
+            qa = result.quality
+            if tension.tension_kN is not None:
+                tension_thresholds = stay.thresholds
+                if tension.tension_kN < tension_thresholds.t_kn_min:
+                    qa.warn("TENSION_LOW", f"T={tension.tension_kN:.1f} kN < {tension_thresholds.t_kn_min}")
+                elif tension.tension_kN > tension_thresholds.t_kn_max:
+                    qa.warn("TENSION_HIGH", f"T={tension.tension_kN:.1f} kN > {tension_thresholds.t_kn_max}")
+            
+            # Almacenar resultados en RealtimeDataStore
+            now_utc, now_local = now_local_utc()
+            accel_record = AccelerationRecord(timestamps=timestamps, samples=accel_data)
+            
+            self.realtime_store.update_analysis(
+                sensor_id=sensor_id,
+                result=result,
+                tension=tension,
+                qa=qa,
+                timestamp=now_local,
+                psd=(freqs, psd),
+                accel=accel_record,
+            )
+            
+            # Escribir a CSV
+            self._tension_writer.writerow([
+                format_timestamp(now_local),
+                format_timestamp(now_utc),
+                stay.stay_id,
+                sensor_id,
+                result.f1_hz,
+                tension.tension_N,
+                tension.tension_kN,
+                result.snr_db,
+                result.peak_prominence,
+                len(samples),
+                256.0,  # TODO: obtener fs real
+                self.mode.get(sensor_id, "AUTO"),
+                stay.k_coefficient,
+                qa.flag.value,
+            ])
+            
+        except Exception as e:
+            logger.error(f"Error procesando FFT para sensor {sensor_id}: {e}", exc_info=True)
 
     def _handle_sample(self, sensor_id: str, sample: Sample) -> None:
         logger.info(f"_handle_sample called for {sensor_id}: {len(sample.acceleration_g)} samples")
@@ -457,13 +615,8 @@ class StreamManager:
                     accel[2],
                 ]
             )
-            # 🎬 Agregar al RollingRecorder (timestamp, node_id, x, y, z)
-            rolling_samples.append((epoch, sensor_id, accel[0], accel[1], accel[2]))
         
         self._accel_writer.writerows(records)
-        
-        # 🎬 Enviar muestras al RollingRecorder para grabación automática
-        self.rolling_recorder.add_samples(rolling_samples)
 
         buffer = self.buffers[sensor_id]
         buffer.extend(sample.acceleration_g, start_time, dt)
