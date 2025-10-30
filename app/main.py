@@ -16,6 +16,7 @@ from app.acquisition.mscl_client import (
     create_demo_client,
 )
 from app.acquisition.stream_manager import RealtimeDataStore, StayDefinition, StreamManager
+from app.acquisition.streaming_coordinator import StreamingCoordinator
 from app.ui.dash_app import DashApp
 from app.utils.logging_setup import configure_logging
 from app.utils.validators import Thresholds
@@ -48,7 +49,7 @@ def build_stays(stays_cfg: Dict) -> List[StayDefinition]:
     return stays
 
 
-def create_client(app_config: Dict, stays: List[StayDefinition]) -> MSCLClient:
+def create_client(app_config: Dict, stays: List[StayDefinition], streaming_coordinator: StreamingCoordinator) -> MSCLClient:
     default_fs = float(app_config.get("default_fs_hz", 256))
     demo_mode = app_config.get("modes", {}).get("demo", True)
     
@@ -57,11 +58,13 @@ def create_client(app_config: Dict, stays: List[StayDefinition]) -> MSCLClient:
         stays_config = [
             {"sensor_id": stay.sensor_id, "stay_id": stay.stay_id} for stay in stays
         ]
+        # NOTA: DemoMSCLClient aún no tiene soporte para StreamingCoordinator
+        # Por ahora retornamos demo sin coordinator (se eliminará después)
         return create_demo_client(stays_config, default_fs)
     else:
         LOGGER.info("Connecting to real MSCL Gateway at 192.168.8.101:5000")
         try:
-            from app.acquisition.real_mscl_client import RealMSCLClient  # ← AGREGAR
+            from app.acquisition.real_mscl_client import RealMSCLClient
             
             connection = mscl.Connection.TcpIp("192.168.8.101", 5000)
             base_station = mscl.BaseStation(connection)
@@ -78,8 +81,13 @@ def create_client(app_config: Dict, stays: List[StayDefinition]) -> MSCLClient:
                 for stay in stays
             ]
             
-            # Crear y retornar cliente real
-            return RealMSCLClient(base_station, sensor_configs, default_fs)
+            # Crear y retornar cliente real CON streaming coordinator
+            return RealMSCLClient(
+                base_station, 
+                sensor_configs, 
+                default_fs,
+                streaming_coordinator=streaming_coordinator
+            )
             
         except Exception as e:
             LOGGER.error(f"Failed to connect to Gateway: {e}")
@@ -119,7 +127,14 @@ def main() -> None:
     log_dir = storage_base / "logs"
     configure_logging(log_dir)
 
-    client = create_client(app_config, stays)
+    # Crear StreamingCoordinator (60s buffer @ 256Hz)
+    streaming_coordinator = StreamingCoordinator(
+        buffer_duration_sec=60,
+        sample_rate_hz=256
+    )
+    LOGGER.info("✅ StreamingCoordinator creado")
+
+    client = create_client(app_config, stays, streaming_coordinator)
     realtime_store = RealtimeDataStore()
     manager = StreamManager(
         client=client,
@@ -128,6 +143,7 @@ def main() -> None:
         rotation_cfg=app_config.get("storage", {}).get("rotation", {}),
         storage_base=storage_base,
         realtime_store=realtime_store,
+        streaming_coordinator=streaming_coordinator,
     )
     gateway_cfg = app_config.get("mscl_gateway", {})
     if gateway_cfg.get("auto_connect", False):
@@ -145,6 +161,10 @@ def main() -> None:
             if not manager.get_status():
                 manager.discover()
             manager.start_all()
+            
+            # NUEVO: Iniciar thread de procesamiento FFT
+            manager.start_fft_processing()
+            
             mode_label = "Demo" if demo_mode else "Real hardware"
             LOGGER.info("%s mode enabled: auto-started streaming for all sensors", mode_label)
         except Exception as exc:  # pragma: no cover - defensive logging
