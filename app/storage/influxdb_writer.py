@@ -54,7 +54,9 @@ class InfluxDBWriter:
         Args:
             sensor_id: Sensor identifier
             timestamp: Measurement timestamp
-            acceleration: Dict with x, y, z acceleration values (in g)
+            acceleration: Dict with x, y, z acceleration values (in g).
+                         Only configured axes will be written. Non-configured axes
+                         can be None or omitted.
             tension: Calculated tension (in N)
             frequency: Fundamental frequency (in Hz)
 
@@ -62,24 +64,23 @@ class InfluxDBWriter:
             True if write was successful
         """
         try:
-            # Validate inputs
-            if not all(k in acceleration for k in ['x', 'y', 'z']):
-                logger.warning(f"[INFLUXDB] Missing acceleration axes for {sensor_id}")
+            # Create point with sensor_id tag
+            point = Point("sensor_data").tag("sensor_id", sensor_id)
+            
+            # Add acceleration fields only for axes that have valid values
+            fields_added = 0
+            for axis in ['x', 'y', 'z']:
+                if axis in acceleration and acceleration[axis] is not None:
+                    point = point.field(f"acceleration_{axis}", float(acceleration[axis]))
+                    fields_added += 1
+            
+            # Validate that at least one axis was added
+            if fields_added == 0:
+                logger.warning(f"[INFLUXDB] No valid acceleration data for {sensor_id}")
                 return False
-
-            if acceleration['x'] is None or acceleration['y'] is None or acceleration['z'] is None:
-                logger.warning(f"[INFLUXDB] Null acceleration values for {sensor_id}")
-                return False
-
-            # Create point
-            point = (
-                Point("sensor_data")
-                .tag("sensor_id", sensor_id)
-                .field("acceleration_x", float(acceleration['x']))
-                .field("acceleration_y", float(acceleration['y']))
-                .field("acceleration_z", float(acceleration['z']))
-                .time(timestamp, WritePrecision.MS)
-            )
+            
+            # Add timestamp
+            point = point.time(timestamp, WritePrecision.MS)
 
             # Add optional fields if available
             if tension is not None:
