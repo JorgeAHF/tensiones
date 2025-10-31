@@ -356,11 +356,11 @@ class StreamManager:
             states.append(state)
         return states
 
-    def configure(self, sensor_id: str, sample_rate: float, axes: Iterable[str]) -> None:
+    def configure(self, sensor_id: str, sample_rate: float, axes: Iterable[str], data_format: str = "float") -> None:
         if not self._gateway_status.connected:
             logger.warning("Cannot configure sensor %s without gateway connection", sensor_id)
             return
-        self.client.configure_node(sensor_id, sample_rate, axes)
+        self.client.configure_node(sensor_id, sample_rate, axes, data_format)
         stay = self.stays.get(sensor_id)
         if stay is None:
             return

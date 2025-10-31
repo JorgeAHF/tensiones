@@ -462,6 +462,200 @@ class DashApp:
             ],
         )
 
+        # Nueva pestaña: Configuración de Sensores
+        config_sensor_tab = dbc.Tab(
+            label="Configuración de Sensores",
+            tab_id="sensor_config",
+            children=[
+                dbc.Card(
+                    [
+                        dbc.CardHeader("Configuración de Sensores para Monitoreo"),
+                        dbc.CardBody(
+                            [
+                                # Sección 1: Selección de Sensor
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                dbc.Label("Sensor", className="fw-bold"),
+                                                dcc.Dropdown(
+                                                    id="config-sensor-select",
+                                                    options=[],
+                                                    placeholder="Selecciona un sensor",
+                                                    clearable=False,
+                                                ),
+                                            ],
+                                            md=6,
+                                        ),
+                                    ],
+                                    className="mb-3",
+                                ),
+                                
+                                html.Hr(),
+                                
+                                # Sección 2: Parámetros de Muestreo
+                                html.H5("Parámetros de Muestreo", className="mb-3"),
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                dbc.Label("Frecuencia de Muestreo (Hz)"),
+                                                dcc.Dropdown(
+                                                    id="config-sample-rate-new",
+                                                    options=[
+                                                        {"label": "32 Hz", "value": 32},
+                                                        {"label": "64 Hz", "value": 64},
+                                                        {"label": "128 Hz", "value": 128},
+                                                        {"label": "256 Hz (recomendado)", "value": 256},
+                                                        {"label": "512 Hz", "value": 512},
+                                                    ],
+                                                    value=256,
+                                                    clearable=False,
+                                                ),
+                                            ],
+                                            md=4,
+                                        ),
+                                        dbc.Col(
+                                            [
+                                                dbc.Label("Duración"),
+                                                dcc.RadioItems(
+                                                    id="config-duration-mode",
+                                                    options=[
+                                                        {"label": "Ilimitada (hasta detener manualmente)", "value": "unlimited"},
+                                                        {"label": "Tiempo específico", "value": "timed"},
+                                                    ],
+                                                    value="unlimited",
+                                                ),
+                                            ],
+                                            md=4,
+                                        ),
+                                        dbc.Col(
+                                            [
+                                                dbc.Label("Minutos (si es tiempo específico)"),
+                                                dbc.Input(
+                                                    id="config-duration-minutes",
+                                                    type="number",
+                                                    placeholder="Minutos",
+                                                    min=1,
+                                                    max=1440,
+                                                    disabled=True,
+                                                ),
+                                            ],
+                                            md=4,
+                                        ),
+                                    ],
+                                    className="g-3 mb-3",
+                                ),
+                                
+                                html.Hr(),
+                                
+                                # Sección 3: Canales Activos
+                                html.H5("Canales Activos", className="mb-3"),
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                dbc.Checklist(
+                                                    id="config-active-axes",
+                                                    options=[
+                                                        {"label": "Eje X", "value": "x"},
+                                                        {"label": "Eje Y", "value": "y"},
+                                                        {"label": "Eje Z (vertical - recomendado)", "value": "z"},
+                                                    ],
+                                                    value=["x", "y", "z"],
+                                                    switch=True,
+                                                    inline=True,
+                                                ),
+                                            ],
+                                            md=12,
+                                        ),
+                                    ],
+                                    className="mb-2",
+                                ),
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                html.Div(
+                                                    dbc.Alert(
+                                                        "💡 Tip: Activar menos canales permite usar más sensores simultáneos",
+                                                        color="info",
+                                                    ),
+                                                    id="bandwidth-warning",
+                                                ),
+                                            ],
+                                            md=12,
+                                        ),
+                                    ],
+                                ),
+                                
+                                html.Hr(),
+                                
+                                # Sección 4: Formato de Datos
+                                html.H5("Formato de Datos", className="mb-3"),
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                dcc.RadioItems(
+                                                    id="config-data-format",
+                                                    options=[
+                                                        {"label": "Float 32-bit (precisión completa - recomendado)", "value": "float"},
+                                                        {"label": "UInt16 (menor ancho de banda)", "value": "uint16"},
+                                                    ],
+                                                    value="float",
+                                                ),
+                                            ],
+                                            md=12,
+                                        ),
+                                    ],
+                                    className="mb-3",
+                                ),
+                                
+                                html.Hr(),
+                                
+                                # Sección 5: Botones de Acción
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                dbc.Button(
+                                                    "Aplicar Configuración y Monitorear",
+                                                    id="btn-apply-and-monitor",
+                                                    color="success",
+                                                    size="lg",
+                                                    className="w-100",
+                                                ),
+                                            ],
+                                            md=6,
+                                        ),
+                                        dbc.Col(
+                                            [
+                                                dbc.Button(
+                                                    "Detener Monitoreo",
+                                                    id="btn-stop-monitoring",
+                                                    color="danger",
+                                                    size="lg",
+                                                    className="w-100",
+                                                    disabled=True,
+                                                ),
+                                            ],
+                                            md=6,
+                                        ),
+                                    ],
+                                    className="g-2",
+                                ),
+                                
+                                # Área de feedback
+                                html.Div(id="config-sensor-feedback", className="mt-3"),
+                            ]
+                        ),
+                    ],
+                    className="mb-4 shadow-sm",
+                ),
+            ],
+        )
+
         realtime_tab = dbc.Tab(
             label="Tiempo real",
             tab_id="realtime",
@@ -919,7 +1113,7 @@ class DashApp:
             [
                 html.H1("MSCL Tension Platform", className="mb-4 fw-bold"),
                 dbc.Tabs(
-                    [network_tab, realtime_tab, config_tab, accel_tab, grafana_tab],
+                    [network_tab, config_sensor_tab, realtime_tab, config_tab, accel_tab, grafana_tab],
                     id="tabs",
                     active_tab="network",
                     className="mb-4",
@@ -1380,6 +1574,177 @@ class DashApp:
                 error_fig.update_layout(title=f"❌ Error", template="plotly_white", height=600)
                 status = dbc.Alert(f"❌ Error: {str(e)}", color="danger")
                 return error_fig, status
+
+        # ===== CALLBACKS PARA PESTAÑA DE CONFIGURACIÓN DE SENSORES =====
+        
+        @app.callback(
+            Output("config-sensor-select", "options"),
+            Input("interval", "n_intervals")
+        )
+        def actualizar_lista_sensores(_):
+            """Actualiza la lista de sensores disponibles."""
+            states = self.manager.get_status()
+            options = [
+                {"label": f"{state.info.sensor_id} - {state.info.stay_id}", "value": state.info.sensor_id}
+                for state in states
+            ]
+            return options
+        
+        @app.callback(
+            Output("config-duration-minutes", "disabled"),
+            Input("config-duration-mode", "value")
+        )
+        def toggle_duration_input(mode):
+            """Habilita el input de minutos solo si se selecciona 'timed'."""
+            return mode != "timed"
+        
+        @app.callback(
+            Output("config-active-axes", "value"),
+            Output("bandwidth-warning", "children"),
+            Input("config-active-axes", "value")
+        )
+        def validar_ejes(axes_selected):
+            """Asegura que al menos un eje esté seleccionado."""
+            if not axes_selected or len(axes_selected) == 0:
+                # Forzar al menos el eje Z
+                axes_selected = ["z"]
+                warning = dbc.Alert(
+                    "⚠️ Al menos un eje debe estar activo. Se seleccionó Z por defecto.",
+                    color="warning"
+                )
+            else:
+                n_axes = len(axes_selected)
+                if n_axes == 1:
+                    warning = dbc.Alert(
+                        "✅ 1 canal activo - máxima capacidad de sensores simultáneos",
+                        color="success"
+                    )
+                elif n_axes == 2:
+                    warning = dbc.Alert(
+                        "⚠️ 2 canales activos - capacidad media",
+                        color="info"
+                    )
+                else:
+                    warning = dbc.Alert(
+                        "💡 3 canales activos - menor capacidad de sensores simultáneos",
+                        color="info"
+                    )
+            
+            return axes_selected, warning
+        
+        @app.callback(
+            Output("config-sensor-feedback", "children"),
+            Output("btn-apply-and-monitor", "disabled"),
+            Output("btn-stop-monitoring", "disabled"),
+            Input("btn-apply-and-monitor", "n_clicks"),
+            Input("btn-stop-monitoring", "n_clicks"),
+            State("config-sensor-select", "value"),
+            State("config-sample-rate-new", "value"),
+            State("config-active-axes", "value"),
+            State("config-data-format", "value"),
+            State("config-duration-mode", "value"),
+            State("config-duration-minutes", "value"),
+            prevent_initial_call=True
+        )
+        def controlar_monitoreo(
+            n_clicks_start, 
+            n_clicks_stop, 
+            sensor_id, 
+            sample_rate, 
+            axes, 
+            data_format,
+            duration_mode,
+            duration_minutes
+        ):
+            """Aplica configuración e inicia/detiene monitoreo."""
+            triggered_list = callback_context.triggered or []
+            triggered = triggered_list[0]["prop_id"].split(".")[0] if triggered_list else ""
+            
+            if triggered == "btn-apply-and-monitor":
+                # Validaciones
+                if not sensor_id:
+                    return (
+                        dbc.Alert("❌ Selecciona un sensor primero", color="danger"),
+                        False,  # btn-apply habilitado
+                        True    # btn-stop deshabilitado
+                    )
+                
+                if not axes or len(axes) == 0:
+                    return (
+                        dbc.Alert("❌ Selecciona al menos un eje", color="danger"),
+                        False,
+                        True
+                    )
+                
+                try:
+                    # 1. Configurar el nodo
+                    logger.info(f"Configurando sensor {sensor_id}: fs={sample_rate}Hz, ejes={axes}, formato={data_format}")
+                    
+                    self.manager.configure(
+                        sensor_id=sensor_id,
+                        sample_rate=sample_rate,
+                        axes=axes,
+                        data_format=data_format
+                    )
+                    
+                    # 2. Iniciar streaming
+                    self.manager.start(sensor_id)
+                    
+                    # 3. Si es duración limitada, programar detención
+                    if duration_mode == "timed" and duration_minutes:
+                        # TODO: Implementar timer para detener automáticamente
+                        # (puede ser con threading.Timer en manager)
+                        logger.info(f"Monitoreo programado por {duration_minutes} minutos (detención automática no implementada)")
+                    
+                    feedback = dbc.Alert(
+                        [
+                            html.H5("✅ Monitoreo iniciado correctamente", className="alert-heading"),
+                            html.Hr(),
+                            html.P(f"Sensor: {sensor_id}"),
+                            html.P(f"Frecuencia: {sample_rate} Hz"),
+                            html.P(f"Canales: {', '.join([a.upper() for a in axes])}"),
+                            html.P(f"Formato: {data_format}"),
+                            html.P(f"Duración: {'Ilimitada' if duration_mode == 'unlimited' else f'{duration_minutes} minutos'}"),
+                            html.Hr(),
+                            html.P("Los datos se están guardando en InfluxDB automáticamente.", className="mb-0"),
+                        ],
+                        color="success"
+                    )
+                    
+                    return (
+                        feedback,
+                        True,   # btn-apply deshabilitado (ya está monitoreando)
+                        False   # btn-stop habilitado
+                    )
+                    
+                except Exception as e:
+                    logger.exception(f"Error al iniciar monitoreo de {sensor_id}")
+                    return (
+                        dbc.Alert(f"❌ Error: {str(e)}", color="danger"),
+                        False,
+                        True
+                    )
+            
+            elif triggered == "btn-stop-monitoring":
+                try:
+                    if sensor_id:
+                        self.manager.stop(sensor_id)
+                        logger.info(f"Monitoreo detenido para sensor {sensor_id}")
+                    
+                    return (
+                        dbc.Alert("⏹️ Monitoreo detenido", color="warning"),
+                        False,  # btn-apply habilitado
+                        True    # btn-stop deshabilitado
+                    )
+                except Exception as e:
+                    logger.exception(f"Error al detener monitoreo de {sensor_id}")
+                    return (
+                        dbc.Alert(f"❌ Error al detener: {str(e)}", color="danger"),
+                        True,
+                        False
+                    )
+            
+            return dash.no_update, dash.no_update, dash.no_update
 
     def run(self, host: str = "0.0.0.0", port: int = 8050) -> None:
         self.dash_app.run(host=host, port=port)

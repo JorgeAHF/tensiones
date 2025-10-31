@@ -131,7 +131,7 @@ class RealMSCLClient(MSCLClient):
         """Return list of SensorInfo objects."""
         return list(self._sensors.values())
     
-    def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str]) -> None:
+    def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str], data_format: str = "float") -> None:
         """Configure node sampling parameters."""
         if sensor_id not in self._sensors:
             raise KeyError(f"Unknown sensor {sensor_id}")
@@ -139,7 +139,30 @@ class RealMSCLClient(MSCLClient):
         info = self._sensors[sensor_id]
         info.sample_rate_hz = sample_rate_hz
         info.axes = list(axes)
-        LOGGER.info(f"Configured sensor {sensor_id}: fs={sample_rate_hz}Hz, axes={axes}")
+        
+        # Configurar formato de datos
+        node = self.nodes.get(sensor_id)
+        if node:
+            try:
+                node_config = mscl.WirelessNodeConfig()
+                
+                # Formato de datos
+                if data_format == "uint16":
+                    node_config.dataFormat(mscl.WirelessTypes.dataFormat_raw_uint16)
+                    LOGGER.info(f"Data format configured: uint16 (raw)")
+                else:  # float por defecto
+                    node_config.dataFormat(mscl.WirelessTypes.dataFormat_cal_float)
+                    LOGGER.info(f"Data format configured: float (calibrated)")
+                
+                # Aplicar configuración
+                node.applyConfig(node_config)
+                
+            except AttributeError as e:
+                LOGGER.warning(f"Could not set data format (API limitation): {e}")
+            except Exception as e:
+                LOGGER.error(f"Error configuring data format: {e}")
+        
+        LOGGER.info(f"Configured sensor {sensor_id}: fs={sample_rate_hz}Hz, axes={axes}, format={data_format}")
     
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:
         """Start streaming data from a sensor."""
