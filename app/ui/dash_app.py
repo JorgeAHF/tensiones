@@ -144,7 +144,7 @@ def load_persisted_tension(
     return records
 
 
-def _analysis_to_figures(analysis_state):
+def _analysis_to_figures(analysis_state, sensor_id=None, manager=None):
     """Convert pre-calculated analysis data to Plotly figures (READ-ONLY).
     
     This function ONLY reads from RealtimeDataStore - NO FFT processing.
@@ -161,12 +161,26 @@ def _analysis_to_figures(analysis_state):
         timestamps = last_record.timestamps
         samples = last_record.samples
         fig_time = go.Figure()
+        
+        # Obtener ejes activos desde la configuración del sensor en el manager
+        active_axes = ['x', 'y', 'z']  # Por defecto todos
+        if sensor_id and manager:
+            sensor_state = manager.sensors.get(sensor_id)
+            if sensor_state and sensor_state.info.axes:
+                active_axes = [axis.lower() for axis in sensor_state.info.axes]
+        
         # Timestamps ya vienen como datetime del coordinator
-        fig_time.add_trace(go.Scatter(x=timestamps, y=samples[:, 0], mode="lines", name="Ax"))
-        fig_time.add_trace(go.Scatter(x=timestamps, y=samples[:, 1], mode="lines", name="Ay"))
-        fig_time.add_trace(go.Scatter(x=timestamps, y=samples[:, 2], mode="lines", name="Az"))
+        # Solo agregar trazas para los ejes configurados
+        if 'x' in active_axes and samples.shape[1] > 0:
+            fig_time.add_trace(go.Scatter(x=timestamps, y=samples[:, 0], mode="lines", name="Ax"))
+        if 'y' in active_axes and samples.shape[1] > 1:
+            fig_time.add_trace(go.Scatter(x=timestamps, y=samples[:, 1], mode="lines", name="Ay"))
+        if 'z' in active_axes and samples.shape[1] > 2:
+            fig_time.add_trace(go.Scatter(x=timestamps, y=samples[:, 2], mode="lines", name="Az"))
+        
+        axes_str = ''.join([a.upper() for a in active_axes])
         fig_time.update_layout(
-            title="Aceleración reciente",
+            title=f"Aceleración reciente - Ejes activos: {axes_str}",
             xaxis_title="Tiempo",
             yaxis_title="g",
             template="plotly_white",
@@ -1364,7 +1378,7 @@ class DashApp:
             analysis = snapshot.get(sensor_id) if sensor_id else None
             stay = next((s for s in self.stays if s.sensor_id == sensor_id), None)
             card = components.realtime_card(stay, analysis) if stay else html.Div("Sin datos")
-            fig_time, fig_psd, history = _analysis_to_figures(analysis)
+            fig_time, fig_psd, history = _analysis_to_figures(analysis, sensor_id, self.manager)
             if target_date is not None:
                 history = [
                     (ts, tension, qa)
