@@ -178,15 +178,16 @@ def main() -> None:
         try:
             if not manager.get_status():
                 manager.discover()
-            manager.start_all()
+            # CAMBIO: NO iniciar automáticamente - esperar configuración manual desde UI
+            # manager.start_all()  # ← Comentado para control manual
             
-            # NUEVO: Iniciar thread de procesamiento FFT
+            # NUEVO: Iniciar thread de procesamiento FFT (se activa cuando hay datos)
             manager.start_fft_processing()
             
             mode_label = "Demo" if demo_mode else "Real hardware"
-            LOGGER.info("%s mode enabled: auto-started streaming for all sensors", mode_label)
+            LOGGER.info("%s mode enabled: waiting for manual sensor configuration from UI", mode_label)
         except Exception as exc:  # pragma: no cover - defensive logging
-            LOGGER.warning("Failed to auto-start streams: %s", exc)
+            LOGGER.warning("Failed to initialize manager: %s", exc)
 
     dash_app = DashApp(
         manager=manager,

@@ -1477,8 +1477,8 @@ class DashApp:
                 
                 if buffer_data is None:
                     empty_fig = go.Figure()
-                    empty_fig.update_layout(title="⏳ Llenando buffer...", template="plotly_white", height=600)
-                    status = dbc.Alert("✅ Llenando buffer...", color="info")
+                    empty_fig.update_layout(title="⏳ Esperando datos...", template="plotly_white", height=600)
+                    status = dbc.Alert("⏸️ Sin datos - Configure el sensor en la pestaña 'Configuración de Sensores'", color="warning")
                     return empty_fig, status
                 
                 timestamps, samples = buffer_data
@@ -1512,31 +1512,41 @@ class DashApp:
                     y_data = np.zeros(len(times))
                     z_data = np.zeros(len(times))
                 
+                # NUEVO: Obtener configuración actual del sensor para saber qué ejes mostrar
+                sensor_state = self.manager.sensors.get(sensor_id)
+                active_axes = ['x', 'y', 'z']  # Por defecto todos
+                if sensor_state and sensor_state.info.axes:
+                    active_axes = [axis.lower() for axis in sensor_state.info.axes]
+                
                 # Crear gráfica OPTIMIZADA con Scattergl (aceleración WebGL)
                 fig = go.Figure()
                 
-                # Scattergl es 10-100x más rápido que Scatter para datos grandes
-                # visible=True por defecto - Plotly mantendrá el estado del usuario gracias a uirevision
-                fig.add_trace(go.Scattergl(
-                    x=times, y=x_data, mode='lines', name='X',
-                    line=dict(color='#e74c3c', width=1.5),
-                    visible=True,  # Estado inicial, preservado por uirevision
-                ))
+                # Solo agregar trazas para los ejes activos
+                if 'x' in active_axes:
+                    fig.add_trace(go.Scattergl(
+                        x=times, y=x_data, mode='lines', name='X',
+                        line=dict(color='#e74c3c', width=1.5),
+                        visible=True,
+                    ))
                 
-                fig.add_trace(go.Scattergl(
-                    x=times, y=y_data, mode='lines', name='Y',
-                    line=dict(color='#3498db', width=1.5),
-                    visible=True,  # Estado inicial, preservado por uirevision
-                ))
+                if 'y' in active_axes:
+                    fig.add_trace(go.Scattergl(
+                        x=times, y=y_data, mode='lines', name='Y',
+                        line=dict(color='#3498db', width=1.5),
+                        visible=True,
+                    ))
                 
-                fig.add_trace(go.Scattergl(
-                    x=times, y=z_data, mode='lines', name='Z',
-                    line=dict(color='#2ecc71', width=1.5),
-                    visible=True,  # Estado inicial, preservado por uirevision
-                ))
+                if 'z' in active_axes:
+                    fig.add_trace(go.Scattergl(
+                        x=times, y=z_data, mode='lines', name='Z',
+                        line=dict(color='#2ecc71', width=1.5),
+                        visible=True,
+                    ))
                 
+                # Título dinámico con ejes activos
+                axes_str = ', '.join([a.upper() for a in active_axes])
                 fig.update_layout(
-                    title=f"Acelerómetro 10603 - {len(times)} puntos @ 128Hz",
+                    title=f"Acelerómetro 10603 - {len(times)} puntos @ 128Hz | Ejes: {axes_str}",
                     xaxis_title="Tiempo (s)",
                     yaxis_title="Aceleración (g)",
                     template="plotly_white",
@@ -1562,7 +1572,7 @@ class DashApp:
                 fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
                 
                 status = dbc.Alert(
-                    f"✅ ACTIVO | {len(times)} muestras | Actualización: 500ms (2/seg)",
+                    f"✅ ACTIVO | {len(times)} muestras | Ejes: {axes_str} | Actualización: 500ms",
                     color="success"
                 )
                 
