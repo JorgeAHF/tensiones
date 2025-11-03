@@ -24,6 +24,46 @@ from app.utils.validators import QualityAssessment, Thresholds
 logger = logging.getLogger(__name__)
 
 
+def is_valid_acceleration_sample(accel_values: np.ndarray, expected_range: tuple = (-600000, 600000)) -> bool:
+    """
+    Valida si una muestra de aceleración es confiable.
+    
+    Args:
+        accel_values: Array [x, y, z] con valores de aceleración
+        expected_range: Rango válido para valores (en unidades raw o g)
+    
+    Returns:
+        True si la muestra es válida, False si es sospechosa
+    
+    Criterios de validación:
+    - No debe tener todos los ejes en cero (muestra corrupta)
+    - No debe tener algún eje individual en cero exacto (probable error de transmisión)
+    - Debe estar dentro de rango físicamente posible
+    """
+    if len(accel_values) < 3:
+        return False
+    
+    x, y, z = accel_values[0], accel_values[1], accel_values[2]
+    
+    # 1. Verificar que no todos sean cero (muestra claramente corrupta)
+    if x == 0.0 and y == 0.0 and z == 0.0:
+        return False
+    
+    # 2. Verificar que ningún eje individual sea exactamente cero
+    # (muy improbable en sensores de vibración reales)
+    if x == 0.0 or y == 0.0 or z == 0.0:
+        return False
+    
+    # 3. Verificar rangos físicos razonables
+    # Para G-Link-200: valores raw típicos están entre -500000 y 500000
+    if not (expected_range[0] <= x <= expected_range[1] and
+            expected_range[0] <= y <= expected_range[1] and
+            expected_range[0] <= z <= expected_range[1]):
+        return False
+    
+    return True
+
+
 @dataclass
 class StayDefinition:
     stay_id: str
@@ -276,6 +316,7 @@ class StreamManager:
             "ax_g",
             "ay_g",
             "az_g",
+            "is_valid",  # Nueva columna: True si la muestra pasó validación
         ])
         self._tension_writer = self._create_writer("tension", [
             "t_window_end_local",
@@ -594,6 +635,7 @@ class StreamManager:
 
         timestamps = start_time + np.arange(len(sample.acceleration_g)) * dt
         records = []
+        valid_samples = []  # Para análisis: solo muestras válidas
         rolling_samples = []  # 🎬 Para el RollingRecorder
         
         # Obtener ejes configurados del sensor
@@ -614,6 +656,10 @@ class StreamManager:
             accel_y = accel[1] if 'y' in active_axes else float('nan')
             accel_z = accel[2] if 'z' in active_axes else float('nan')
             
+            # Validar la muestra
+            is_valid = is_valid_acceleration_sample(accel)
+            
+            # Guardar en CSV con flag de validez
             records.append(
                 [
                     ts_local,
@@ -624,13 +670,25 @@ class StreamManager:
                     accel_x,
                     accel_y,
                     accel_z,
+                    is_valid,  # Nueva columna
                 ]
             )
+            
+            # Solo agregar a valid_samples si pasó validación
+            if is_valid:
+                valid_samples.append(accel)
         
         self._accel_writer.writerows(records)
+        
+        # Usar solo muestras válidas para el análisis
+        if len(valid_samples) == 0:
+            logger.warning(f"[ANALYSIS] No valid samples for {sensor_id}, skipping analysis")
+            return
+        
+        valid_samples_array = np.array(valid_samples)
 
         buffer = self.buffers[sensor_id]
-        buffer.extend(sample.acceleration_g, start_time, dt)
+        buffer.extend(valid_samples_array, start_time, dt)  # Solo muestras válidas
         ts_arr, samples = buffer.get_array()
         if samples.size == 0:
             return
@@ -680,38 +738,42 @@ class StreamManager:
             AccelerationRecord(timestamps=ts_arr, samples=samples),
         )
         
-        # Escribir a InfluxDB si está disponible
+        # Escribir a InfluxDB si está disponible (SOLO muestras válidas)
         if self.influxdb_writer and tension.tension_newton is not None:
             try:
                 # Verificar que hay muestras válidas antes de guardar
-                if len(sample.acceleration_g) == 0:
-                    logger.warning(f"[INFLUXDB] Skipping write for {sensor_id}: no acceleration samples available")
+                if len(valid_samples_array) == 0:
+                    logger.warning(f"[INFLUXDB] Skipping write for {sensor_id}: no valid acceleration samples")
                 else:
-                    # Calcular aceleración promedio de la última muestra
-                    last_accel = sample.acceleration_g[-1]
+                    # Usar la última muestra VÁLIDA
+                    last_valid_accel = valid_samples_array[-1]
                     
-                    # Obtener ejes configurados del sensor
-                    sensor_state = self.sensors.get(sensor_id)
-                    active_axes = ['x', 'y', 'z']  # Por defecto todos
-                    if sensor_state and sensor_state.info.axes:
-                        active_axes = [axis.lower() for axis in sensor_state.info.axes]
-                    
-                    # Preparar diccionario de aceleración solo con ejes activos
-                    acceleration_data = {}
-                    if 'x' in active_axes:
-                        acceleration_data['x'] = float(last_accel[0])
-                    if 'y' in active_axes:
-                        acceleration_data['y'] = float(last_accel[1])
-                    if 'z' in active_axes:
-                        acceleration_data['z'] = float(last_accel[2])
-                    
-                    self.influxdb_writer.write_sensor_data(
-                        sensor_id=sensor_id,
-                        timestamp=window_end_dt,
-                        acceleration=acceleration_data,
-                        tension=float(tension.tension_newton),
-                        frequency=float(result.f1_hz) if result.f1_hz is not None else None,
-                    )
+                    # Validar una vez más la última muestra antes de guardar
+                    if not is_valid_acceleration_sample(last_valid_accel):
+                        logger.warning(f"[INFLUXDB] Last sample failed validation, skipping")
+                    else:
+                        # Obtener ejes configurados del sensor
+                        sensor_state = self.sensors.get(sensor_id)
+                        active_axes = ['x', 'y', 'z']  # Por defecto todos
+                        if sensor_state and sensor_state.info.axes:
+                            active_axes = [axis.lower() for axis in sensor_state.info.axes]
+                        
+                        # Preparar diccionario de aceleración solo con ejes activos
+                        acceleration_data = {}
+                        if 'x' in active_axes:
+                            acceleration_data['x'] = float(last_valid_accel[0])
+                        if 'y' in active_axes:
+                            acceleration_data['y'] = float(last_valid_accel[1])
+                        if 'z' in active_axes:
+                            acceleration_data['z'] = float(last_valid_accel[2])
+                        
+                        self.influxdb_writer.write_sensor_data(
+                            sensor_id=sensor_id,
+                            timestamp=window_end_dt,
+                            acceleration=acceleration_data,
+                            tension=float(tension.tension_newton),
+                            frequency=float(result.f1_hz) if result.f1_hz is not None else None,
+                        )
             except Exception as e:
                 logger.warning(f"[INFLUXDB] Failed to write data for {sensor_id}: {e}")
 
