@@ -8,6 +8,7 @@ import numpy as np
 import mscl
 from app.acquisition.mscl_client import MSCLClient, GatewayStatus, SensorInfo, Sample
 from app.acquisition.streaming_coordinator import StreamingCoordinator
+from app.sinks.raw_writer import RawStreamingWriter
 
 LOGGER = logging.getLogger(__name__)
 
@@ -20,12 +21,14 @@ class RealMSCLClient(MSCLClient):
         base_station: mscl.BaseStation, 
         sensor_configs: List[Dict[str, Any]], 
         default_fs: float,
-        streaming_coordinator: Optional[StreamingCoordinator] = None
+        streaming_coordinator: Optional[StreamingCoordinator] = None,
+        raw_writer: Optional[RawStreamingWriter] = None,
     ):
         self.base_station = base_station
         self.sensor_configs = sensor_configs
         self.default_fs = default_fs
         self.streaming_coordinator = streaming_coordinator
+        self.raw_writer = raw_writer
         self.nodes = {}
         self._sensors = {}  # Dict[str, SensorInfo]
         self._threads: Dict[str, threading.Thread] = {}
@@ -318,8 +321,31 @@ class RealMSCLClient(MSCLClient):
                                 (timestamp + i * dt, x, y, z)
                                 for i, (x, y, z) in enumerate(accumulated_samples)
                             ]
+                            if self.raw_writer:
+                                try:
+                                    self.raw_writer.append_batch(sensor_id, samples_for_coordinator)
+                                except Exception as writer_err:
+                                    LOGGER.warning(
+                                        "[RAW] Error guardando lote para %s: %s",
+                                        sensor_id,
+                                        writer_err,
+                                    )
                             self.streaming_coordinator.add_samples_batch(sensor_id, samples_for_coordinator)
-                        
+                        elif self.raw_writer:
+                            dt = 1.0 / info.sample_rate_hz
+                            samples_for_writer = [
+                                (timestamp + i * dt, x, y, z)
+                                for i, (x, y, z) in enumerate(accumulated_samples)
+                            ]
+                            try:
+                                self.raw_writer.append_batch(sensor_id, samples_for_writer)
+                            except Exception as writer_err:
+                                LOGGER.warning(
+                                    "[RAW] Error guardando lote para %s sin coordinator: %s",
+                                    sensor_id,
+                                    writer_err,
+                                )
+
                         # EXISTENTE: Mantener callback para compatibilidad con StreamManager
                         sample = Sample(
                             sensor_id=sensor_id,
