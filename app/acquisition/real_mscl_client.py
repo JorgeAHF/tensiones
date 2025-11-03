@@ -301,7 +301,7 @@ class RealMSCLClient(MSCLClient):
                                 continue
                     
                     # Send accumulated samples in batches (every ~128 samples or ~1 second worth)
-                    if len(accumulated_samples) >= 128:
+                    if len(accumulated_samples) >= 256:
                         # Create numpy array: shape (num_samples, 3)
                         acc_data = np.array(accumulated_samples, dtype=np.float64)
                         
