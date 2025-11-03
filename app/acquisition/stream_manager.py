@@ -683,31 +683,35 @@ class StreamManager:
         # Escribir a InfluxDB si está disponible
         if self.influxdb_writer and tension.tension_newton is not None:
             try:
-                # Calcular aceleración promedio de la última muestra
-                last_accel = sample.acceleration_g[-1] if len(sample.acceleration_g) > 0 else np.array([0, 0, 0])
-                
-                # Obtener ejes configurados del sensor
-                sensor_state = self.sensors.get(sensor_id)
-                active_axes = ['x', 'y', 'z']  # Por defecto todos
-                if sensor_state and sensor_state.info.axes:
-                    active_axes = [axis.lower() for axis in sensor_state.info.axes]
-                
-                # Preparar diccionario de aceleración solo con ejes activos
-                acceleration_data = {}
-                if 'x' in active_axes:
-                    acceleration_data['x'] = float(last_accel[0])
-                if 'y' in active_axes:
-                    acceleration_data['y'] = float(last_accel[1])
-                if 'z' in active_axes:
-                    acceleration_data['z'] = float(last_accel[2])
-                
-                self.influxdb_writer.write_sensor_data(
-                    sensor_id=sensor_id,
-                    timestamp=window_end_dt,
-                    acceleration=acceleration_data,
-                    tension=float(tension.tension_newton),
-                    frequency=float(result.f1_hz) if result.f1_hz is not None else None,
-                )
+                # Verificar que hay muestras válidas antes de guardar
+                if len(sample.acceleration_g) == 0:
+                    logger.warning(f"[INFLUXDB] Skipping write for {sensor_id}: no acceleration samples available")
+                else:
+                    # Calcular aceleración promedio de la última muestra
+                    last_accel = sample.acceleration_g[-1]
+                    
+                    # Obtener ejes configurados del sensor
+                    sensor_state = self.sensors.get(sensor_id)
+                    active_axes = ['x', 'y', 'z']  # Por defecto todos
+                    if sensor_state and sensor_state.info.axes:
+                        active_axes = [axis.lower() for axis in sensor_state.info.axes]
+                    
+                    # Preparar diccionario de aceleración solo con ejes activos
+                    acceleration_data = {}
+                    if 'x' in active_axes:
+                        acceleration_data['x'] = float(last_accel[0])
+                    if 'y' in active_axes:
+                        acceleration_data['y'] = float(last_accel[1])
+                    if 'z' in active_axes:
+                        acceleration_data['z'] = float(last_accel[2])
+                    
+                    self.influxdb_writer.write_sensor_data(
+                        sensor_id=sensor_id,
+                        timestamp=window_end_dt,
+                        acceleration=acceleration_data,
+                        tension=float(tension.tension_newton),
+                        frequency=float(result.f1_hz) if result.f1_hz is not None else None,
+                    )
             except Exception as e:
                 logger.warning(f"[INFLUXDB] Failed to write data for {sensor_id}: {e}")
 
