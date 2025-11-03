@@ -37,7 +37,6 @@ def is_valid_acceleration_sample(accel_values: np.ndarray, expected_range: tuple
     
     Criterios de validación:
     - No debe tener todos los ejes en cero (muestra corrupta)
-    - No debe tener algún eje individual en cero exacto (probable error de transmisión)
     - Debe estar dentro de rango físicamente posible
     """
     if len(accel_values) < 3:
@@ -49,12 +48,7 @@ def is_valid_acceleration_sample(accel_values: np.ndarray, expected_range: tuple
     if x == 0.0 and y == 0.0 and z == 0.0:
         return False
     
-    # 2. Verificar que ningún eje individual sea exactamente cero
-    # (muy improbable en sensores de vibración reales)
-    if x == 0.0 or y == 0.0 or z == 0.0:
-        return False
-    
-    # 3. Verificar rangos físicos razonables
+    # 2. Verificar rangos físicos razonables
     # Para G-Link-200: valores raw típicos están entre -500000 y 500000
     if not (expected_range[0] <= x <= expected_range[1] and
             expected_range[0] <= y <= expected_range[1] and
@@ -105,13 +99,15 @@ class AnalysisState:
 class RealtimeDataStore:
     """Thread-safe storage for UI consumption."""
 
-    def __init__(self) -> None:
+    def __init__(self, buffer_seconds: int = 300, sample_rate_hz: int = 256) -> None:
         self._lock = threading.RLock()
         self._analysis: Dict[str, AnalysisState] = {}
-        # Buffer continuo para visualización suave (ventana de 30 segundos)
+        # Buffer continuo para visualización suave configurable
         self._display_buffers: Dict[str, Tuple[deque, deque]] = {}  # sensor_id -> (timestamps, samples)
         # Índice del último dato leído por la UI (para streaming incremental)
         self._last_read_index: Dict[str, int] = {}
+        self._buffer_seconds = max(1, buffer_seconds)
+        self._sample_rate_hz = max(1, sample_rate_hz)
 
     def ensure_sensor(self, sensor_id: str) -> AnalysisState:
         with self._lock:
@@ -121,7 +117,8 @@ class RealtimeDataStore:
                 self._analysis[sensor_id] = state
             # Inicializar buffer de visualización si no existe
             if sensor_id not in self._display_buffers:
-                self._display_buffers[sensor_id] = (deque(maxlen=30*256), deque(maxlen=30*256))  # 30s @ 256Hz
+                maxlen = self._buffer_seconds * self._sample_rate_hz
+                self._display_buffers[sensor_id] = (deque(maxlen=maxlen), deque(maxlen=maxlen))
                 self._last_read_index[sensor_id] = 0
             return state
 

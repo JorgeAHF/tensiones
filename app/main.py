@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import yaml
 import mscl  # ← AGREGAR ESTA LÍNEA
@@ -20,6 +20,7 @@ from app.acquisition.streaming_coordinator import StreamingCoordinator
 from app.ui.dash_app import DashApp
 from app.utils.logging_setup import configure_logging
 from app.utils.validators import Thresholds
+from app.sinks.raw_writer import RawStreamingWriter
 
 LOGGER = logging.getLogger(__name__)
 
@@ -49,10 +50,15 @@ def build_stays(stays_cfg: Dict) -> List[StayDefinition]:
     return stays
 
 
-def create_client(app_config: Dict, stays: List[StayDefinition], streaming_coordinator: StreamingCoordinator) -> MSCLClient:
+def create_client(
+    app_config: Dict,
+    stays: List[StayDefinition],
+    streaming_coordinator: StreamingCoordinator,
+    raw_writer: Optional[RawStreamingWriter],
+) -> MSCLClient:
     default_fs = float(app_config.get("default_fs_hz", 256))
     demo_mode = app_config.get("modes", {}).get("demo", True)
-    
+
     if demo_mode:
         LOGGER.info("Running in DEMO mode")
         stays_config = [
@@ -83,10 +89,11 @@ def create_client(app_config: Dict, stays: List[StayDefinition], streaming_coord
             
             # Crear y retornar cliente real CON streaming coordinator
             return RealMSCLClient(
-                base_station, 
-                sensor_configs, 
+                base_station,
+                sensor_configs,
                 default_fs,
-                streaming_coordinator=streaming_coordinator
+                streaming_coordinator=streaming_coordinator,
+                raw_writer=raw_writer,
             )
             
         except Exception as e:
@@ -127,13 +134,27 @@ def main() -> None:
     log_dir = storage_base / "logs"
     configure_logging(log_dir)
 
-    # Crear StreamingCoordinator (60s buffer @ 256Hz)
+    streaming_cfg = app_config.get("streaming", {})
+    buffer_duration = int(streaming_cfg.get("buffer_seconds", 300))
+    buffer_fs = int(streaming_cfg.get("sample_rate_hz", app_config.get("default_fs_hz", 256)))
+
     streaming_coordinator = StreamingCoordinator(
-        buffer_duration_sec=60,
-        sample_rate_hz=256
+        buffer_duration_sec=buffer_duration,
+        sample_rate_hz=buffer_fs,
     )
     LOGGER.info("[OK] StreamingCoordinator creado")
-    
+
+    raw_writer: Optional[RawStreamingWriter] = None
+    raw_stream_cfg = app_config.get("storage", {}).get("raw_stream", {})
+    if raw_stream_cfg.get("enabled", True):
+        try:
+            raw_dir = raw_stream_cfg.get("base_dir")
+            base_dir = Path(raw_dir).resolve() if raw_dir else (storage_base / "raw")
+            raw_writer = RawStreamingWriter(base_dir)
+            LOGGER.info("[OK] Raw streaming writer inicializado en %s", base_dir)
+        except Exception as exc:
+            LOGGER.warning("[RAW] No se pudo inicializar RawStreamingWriter: %s", exc)
+
     # Intentar inicializar InfluxDB writer (opcional)
     influxdb_writer = None
     influxdb_config = app_config.get("influxdb", {})
@@ -151,8 +172,16 @@ def main() -> None:
             LOGGER.warning(f"[INFLUXDB] No se pudo inicializar InfluxDB: {e}")
             influxdb_writer = None
 
-    client = create_client(app_config, stays, streaming_coordinator)
-    realtime_store = RealtimeDataStore()
+    client = create_client(app_config, stays, streaming_coordinator, raw_writer=raw_writer)
+
+    ui_cfg = app_config.get("ui", {})
+    display_buffer_seconds = int(
+        ui_cfg.get("display_buffer_seconds", buffer_duration)
+    )
+    realtime_store = RealtimeDataStore(
+        buffer_seconds=display_buffer_seconds,
+        sample_rate_hz=buffer_fs,
+    )
     manager = StreamManager(
         client=client,
         stays=stays,

@@ -16,6 +16,9 @@ modes:
   demo: false
 storage:
   base_dir: ./data
+  raw_stream:
+    enabled: true
+    base_dir: null
   rotation:
     max_mb: 100
     minutes: 10
@@ -24,6 +27,10 @@ timezone: America/Mexico_City
 ui:
   history_hours: 1
   refresh_ms: 500
+  display_buffer_seconds: 300
+streaming:
+  buffer_seconds: 300
+  sample_rate_hz: 256
 influxdb:
   enabled: true
   url: http://localhost:8086
