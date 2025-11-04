@@ -1812,9 +1812,9 @@ class DashApp:
                             value=state.info.sample_rate_hz or 256,
                         )),
                         html.Td([
-                            dbc.Checkbox(id={"type": "network-node-axis-x", "index": sensor_id}, value=True, label="X", inline=True, className="me-2"),
-                            dbc.Checkbox(id={"type": "network-node-axis-y", "index": sensor_id}, value=True, label="Y", inline=True, className="me-2"),
-                            dbc.Checkbox(id={"type": "network-node-axis-z", "index": sensor_id}, value=True, label="Z", inline=True),
+                            dbc.Checkbox(id={"type": "network-node-axis-x", "index": sensor_id}, value=True, label="X", className="me-2"),
+                            dbc.Checkbox(id={"type": "network-node-axis-y", "index": sensor_id}, value=True, label="Y", className="me-2"),
+                            dbc.Checkbox(id={"type": "network-node-axis-z", "index": sensor_id}, value=True, label="Z"),
                         ]),
                         html.Td(dbc.Select(
                             id={"type": "network-node-format", "index": sensor_id},
@@ -1847,7 +1847,11 @@ class DashApp:
                 
                 return True, table
             
-            elif trigger_id in ["btn-close-network-modal", "btn-apply-network"]:
+            elif trigger_id == "btn-close-network-modal":
+                return False, dash.no_update
+            
+            # Si se presiona Apply, dejar abierto (será cerrado después de aplicar)
+            elif trigger_id == "btn-apply-network":
                 return False, dash.no_update
             
             return is_open, dash.no_update
@@ -1867,7 +1871,10 @@ class DashApp:
         )
         def apply_and_start_sampling_network(n_clicks, enabled_list, id_list, rates, axis_x, axis_y, axis_z, formats):
             """Configura e inicia múltiples nodos (Sampling Network)."""
+            logger.info(f"[SAMPLING NETWORK] Callback ejecutado - n_clicks={n_clicks}, enabled_list={enabled_list}")
+            
             if not n_clicks:
+                logger.warning("[SAMPLING NETWORK] n_clicks es None o 0 - abortando")
                 return dash.no_update, dash.no_update
             
             try:
@@ -1902,13 +1909,21 @@ class DashApp:
                     
                     try:
                         # Configurar e iniciar nodo
-                        self.manager.configure_sensor(sensor_id, sample_rate_hz=rate, axes=axes)
+                        self.manager.configure(sensor_id, sample_rate=rate, axes=axes, data_format=data_format)
                         self.manager.start(sensor_id)
                         success_sensors.append(sensor_id)
                         logger.info(f"Nodo {sensor_id} iniciado correctamente ({rate}Hz, {axes}, {data_format})")
                     except Exception as e:
                         failed_sensors.append((sensor_id, str(e)))
                         logger.error(f"Error iniciando nodo {sensor_id}: {e}")
+                
+                # Iniciar procesamiento FFT para visualización en tiempo real
+                if success_sensors:
+                    try:
+                        self.manager.start_fft_processing()
+                        logger.info("Procesamiento FFT iniciado para visualización en tiempo real")
+                    except Exception as e:
+                        logger.warning(f"No se pudo iniciar procesamiento FFT: {e}")
                 
                 # Generar feedback
                 if success_sensors and not failed_sensors:
@@ -1941,6 +1956,7 @@ class DashApp:
                         color="danger",
                     )
                 
+                logger.info(f"[SAMPLING NETWORK] Retornando feedback - success: {len(success_sensors)}, failed: {len(failed_sensors)}")
                 return feedback, state_data
                 
             except Exception as e:
@@ -2018,19 +2034,24 @@ class DashApp:
         )
         def show_individual_node_controls(n_clicks_list, button_ids):
             """Muestra controles individuales para el nodo seleccionado."""
+            logger.info(f"[CONTROL-INDIVIDUAL] Callback disparado - n_clicks: {n_clicks_list}, buttons: {button_ids}")
             ctx = callback_context
             if not ctx.triggered:
+                logger.warning("[CONTROL-INDIVIDUAL] No hay trigger")
                 return dash.no_update
             
             # Identificar qué botón se presionó
             trigger_id = ctx.triggered[0]["prop_id"]
+            logger.info(f"[CONTROL-INDIVIDUAL] Trigger ID: {trigger_id}")
             
             # Extraer sensor_id del trigger
             import json
             try:
                 trigger_dict = json.loads(trigger_id.split(".")[0])
                 sensor_id = trigger_dict["index"]
-            except:
+                logger.info(f"[CONTROL-INDIVIDUAL] Sensor seleccionado: {sensor_id}")
+            except Exception as e:
+                logger.error(f"[CONTROL-INDIVIDUAL] Error parseando trigger: {e}")
                 return dash.no_update
             
             # Obtener información del nodo

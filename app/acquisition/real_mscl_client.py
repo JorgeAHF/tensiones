@@ -502,7 +502,17 @@ class RealMSCLClient(MSCLClient):
         except Exception as e:
             LOGGER.warning(f"Individual sync sampling failed: {e}")
         
-        # Strategy 3: Check if network is already running from external source
+        # Strategy 3: Try simple node.startSampling() (works for G-Link-200)
+        try:
+            LOGGER.info(f"Trying simple node.startSampling() for node {node.nodeAddress()}...")
+            node.startSampling()
+            self._sync_network_started = True
+            LOGGER.info("SUCCESS: Node sampling started with node.startSampling()!")
+            return  # Success!
+        except Exception as e:
+            LOGGER.warning(f"Simple node.startSampling() failed: {e}")
+        
+        # Strategy 4: Check if network is already running from external source
         LOGGER.info("Checking if SyncSamplingNetwork is already active from external source (e.g., SensorConnect)...")
         LOGGER.info("Application will attempt to read data from existing sampling session")
         # Don't raise - let it try to read data anyway
