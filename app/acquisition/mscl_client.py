@@ -59,7 +59,13 @@ class MSCLClient:
     def list_nodes(self) -> List[SensorInfo]:  # pragma: no cover - interface
         raise NotImplementedError
 
-    def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str]) -> None:  # pragma: no cover
+    def configure_node(
+        self,
+        sensor_id: str,
+        sample_rate_hz: float,
+        axes: Iterable[str],
+        data_format: str = "float",
+    ) -> None:  # pragma: no cover
         raise NotImplementedError
 
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:  # pragma: no cover
@@ -152,13 +158,25 @@ class DemoMSCLClient(MSCLClient):
             return []
         return list(self._sensors.values())
 
-    def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str]) -> None:
+    def configure_node(
+        self,
+        sensor_id: str,
+        sample_rate_hz: float,
+        axes: Iterable[str],
+        data_format: str = "float",
+    ) -> None:
         info = self._sensors.get(sensor_id)
         if info is None:
             raise KeyError(f"Unknown sensor {sensor_id}")
         info.sample_rate_hz = sample_rate_hz
         info.axes = list(axes)
-        logger.info("Configured demo sensor %s fs=%.2f axes=%s", sensor_id, sample_rate_hz, axes)
+        logger.info(
+            "Configured demo sensor %s fs=%.2f axes=%s format=%s",
+            sensor_id,
+            sample_rate_hz,
+            axes,
+            data_format,
+        )
         self._sample_counters[sensor_id] = 0
 
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:
@@ -453,13 +471,21 @@ class HttpMSCLClient(MSCLClient):
                 logger.debug("Skipping malformed sensor entry %s: %s", entry, exc)
         return sensors
 
-    def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str]) -> None:
-        body = json.dumps(
-            {
-                "sample_rate_hz": sample_rate_hz,
-                "axes": list(axes),
-            }
-        ).encode("utf-8")
+    def configure_node(
+        self,
+        sensor_id: str,
+        sample_rate_hz: float,
+        axes: Iterable[str],
+        data_format: str = "float",
+    ) -> None:
+        payload = {
+            "sample_rate_hz": sample_rate_hz,
+            "axes": list(axes),
+        }
+        if data_format:
+            payload["data_format"] = data_format
+
+        body = json.dumps(payload).encode("utf-8")
         self._perform_request("POST", f"/nodes/{sensor_id}/configure", body=body)
         logger.info(
             "Configured sensor %s with fs=%.3f and axes=%s via HTTP gateway",
