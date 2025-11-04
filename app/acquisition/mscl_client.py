@@ -214,7 +214,10 @@ class DemoMSCLClient(MSCLClient):
             )
             self._sample_counters[sensor_id] = 0
             rng = self._rngs[info.sensor_id]
-            samples_per_batch = int(info.sample_rate_hz)
+            samples_per_batch = max(1, int(info.sample_rate_hz))
+            stream_start_epoch = time.time()
+            stream_start_perf = time.perf_counter()
+            next_emit_time = stream_start_perf
             while not stop_event.is_set():
                 start_index = self._sample_counters[sensor_id]
                 sample_idx = np.arange(start_index, start_index + samples_per_batch)
@@ -247,7 +250,17 @@ class DemoMSCLClient(MSCLClient):
                 noise = rng.normal(scale=self._noise_level, size=batch.shape)
                 batch += noise
 
-                batch_timestamp = time.time()
+                if info.sample_rate_hz > 0:
+                    dt = 1.0 / info.sample_rate_hz
+                    batch_start_time = stream_start_epoch + start_index * dt
+                else:
+                    dt = 0.0
+                    batch_start_time = stream_start_epoch
+                batch_timestamp = (
+                    batch_start_time + (samples_per_batch - 1) * dt
+                    if dt > 0
+                    else batch_start_time
+                )
                 sample = Sample(
                     sensor_id=info.sensor_id,
                     stay_id=info.stay_id,
@@ -265,7 +278,7 @@ class DemoMSCLClient(MSCLClient):
                         )
                     else:
                         dt = 1.0 / info.sample_rate_hz
-                        start_epoch = batch_timestamp - (batch.shape[0] - 1) * dt
+                        start_epoch = batch_start_time
                         per_sample = [
                             (
                                 start_epoch + idx * dt,
@@ -286,6 +299,11 @@ class DemoMSCLClient(MSCLClient):
                                 )
 
                 callback(sample)
+                if info.sample_rate_hz > 0:
+                    next_emit_time += samples_per_batch / info.sample_rate_hz
+                    sleep_time = next_emit_time - time.perf_counter()
+                    if sleep_time > 0:
+                        stop_event.wait(sleep_time)
             logger.info("Demo stream stopped for %s", sensor_id)
 
         thread = threading.Thread(target=run, name=f"DemoStream-{sensor_id}", daemon=True)
