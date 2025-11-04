@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import yaml
-import mscl  # ← AGREGAR ESTA LÍNEA
 
 from app.acquisition.mscl_client import (
     DemoMSCLClient,
@@ -70,6 +69,7 @@ def create_client(
     else:
         LOGGER.info("Connecting to real MSCL Gateway at 192.168.8.101:5000")
         try:
+            import mscl  # Importar solo si se usa el cliente real
             from app.acquisition.real_mscl_client import RealMSCLClient
             
             connection = mscl.Connection.TcpIp("192.168.8.101", 5000)
@@ -207,14 +207,16 @@ def main() -> None:
         try:
             if not manager.get_status():
                 manager.discover()
-            # CAMBIO: NO iniciar automáticamente - esperar configuración manual desde UI
-            # manager.start_all()  # ← Comentado para control manual
+            # CRÍTICO: NO iniciar automáticamente - esperar configuración manual desde UI
+            # El usuario debe configurar e iniciar manualmente desde la pestaña "Control de Red"
+            # manager.start_all()  # ← DESHABILITADO para control manual tipo SensorConnect
             
-            # NUEVO: Iniciar thread de procesamiento FFT (se activa cuando hay datos)
+            # Iniciar thread de procesamiento FFT (se activa cuando hay datos)
             manager.start_fft_processing()
             
             mode_label = "Demo" if demo_mode else "Real hardware"
-            LOGGER.info("%s mode enabled: waiting for manual sensor configuration from UI", mode_label)
+            LOGGER.info("%s mode enabled - System ready | Waiting for manual sensor configuration from UI", mode_label)
+            LOGGER.info("Go to 'Control de Red' tab to configure and start sensor sampling")
         except Exception as exc:  # pragma: no cover - defensive logging
             LOGGER.warning("Failed to initialize manager: %s", exc)
 

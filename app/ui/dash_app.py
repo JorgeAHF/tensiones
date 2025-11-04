@@ -19,6 +19,7 @@ from app.acquisition.stream_manager import RealtimeDataStore, StayDefinition, St
 from app.utils.timeutils import DEFAULT_TZ
 from app.utils.validators import Thresholds
 from app.ui import components
+from app.ui.network_control_tab import create_network_control_tab
 
 logger = logging.getLogger(__name__)
 
@@ -1123,16 +1124,24 @@ class DashApp:
             ],
         )
 
+        # Nueva pestaña "Control de Red" estilo SensorConnect
+        network_control_tab = create_network_control_tab()
+
         self.dash_app.layout = dbc.Container(
             [
-                html.H1("MSCL Tension Platform", className="mb-4 fw-bold"),
+                html.H1("MSCL TENSION PLATFORM", className="mb-4 fw-bold"),
                 dbc.Tabs(
-                    [network_tab, config_sensor_tab, realtime_tab, config_tab, accel_tab, grafana_tab],
+                    [network_control_tab, realtime_tab, config_tab, accel_tab, grafana_tab],
                     id="tabs",
-                    active_tab="network",
+                    active_tab="network-control",
                     className="mb-4",
                 ),
                 dcc.Interval(id="interval", interval=refresh_interval, n_intervals=0),
+                # Interval y Stores para Control de Red (siempre activos)
+                dcc.Interval(id="node-detection-interval", interval=5000, n_intervals=0),
+                dcc.Store(id="network-state-store", data={}),
+                dcc.Store(id="network-control-state", data={"nodes_config": {}}),
+                dcc.Store(id="selected-node-for-config", data=None),
             ],
             fluid=True,
             className="bg-light min-vh-100 py-4",
@@ -1140,81 +1149,6 @@ class DashApp:
 
     def _register_callbacks(self) -> None:
         app = self.dash_app
-
-        @app.callback(
-            Output("network-content", "children"),
-            Output("sensor-selector", "options"),
-            Output("realtime-sensor", "options"),
-            Output("gateway-status", "children"),
-            Output("network-summary", "children"),
-            Output("config-sensor", "options"),
-            Input("btn-discover", "n_clicks"),
-            Input("interval", "n_intervals"),
-            State("realtime-sensor", "value"),
-        )
-        def update_network(_, __, realtime_value):
-            triggered_list = callback_context.triggered or []
-            triggered = triggered_list[0]["prop_id"] if triggered_list else ""
-            if "btn-discover" in triggered:
-                states = self.manager.discover()
-            else:
-                states = self.manager.get_status()
-            stay_options = [
-                {"label": stay.stay_id, "value": stay.sensor_id} for stay in self.stays
-            ]
-            valid_values = {opt["value"] for opt in stay_options}
-            default_sensor = stay_options[0]["value"] if stay_options else None
-            if realtime_value in valid_values:
-                selected_realtime = realtime_value
-            else:
-                selected_realtime = default_sensor
-            table = components.network_table(states)
-            gateway_badge = components.gateway_status_badge(self.manager.get_gateway_status())
-            summary = components.network_summary(states, demo_mode=False)
-            return (
-                table,
-                stay_options,
-                stay_options,
-                gateway_badge,
-                summary,
-                stay_options,
-            )
-
-        @app.callback(
-            Output("network-feedback", "children"),
-            Input("btn-connect-gateway", "n_clicks"),
-            Input("btn-disconnect-gateway", "n_clicks"),
-            State("gateway-host", "value"),
-            State("gateway-port", "value"),
-            prevent_initial_call=True,
-        )
-        def control_gateway(connect_clicks, disconnect_clicks, host, port):
-            triggered_list = callback_context.triggered or []
-            triggered = triggered_list[0]["prop_id"].split(".")[0] if triggered_list else ""
-            status = self.manager.get_gateway_status()
-            feedback = dash.no_update
-            try:
-                if triggered == "btn-connect-gateway":
-                    host_value = host or self.gateway_config.get("host", "127.0.0.1")
-                    port_value = int(port) if port not in (None, "") else int(
-                        self.gateway_config.get("port", 0)
-                    )
-                    if port_value <= 0:
-                        raise ValueError("El puerto debe ser mayor a 0")
-                    status = self.manager.connect_gateway(host_value, port_value)
-                    self.gateway_config["host"] = host_value
-                    self.gateway_config["port"] = port_value
-                    color = "success" if status.connected else "warning"
-                    message = status.message or "Gateway conectado"
-                    feedback = dbc.Alert(message, color=color, dismissable=True)
-                elif triggered == "btn-disconnect-gateway":
-                    status = self.manager.disconnect_gateway()
-                    message = status.message or "Gateway desconectado"
-                    feedback = dbc.Alert(message, color="warning", dismissable=True)
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.exception("Gateway control error")
-                feedback = dbc.Alert(str(exc), color="danger", dismissable=True)
-            return feedback
 
         @app.callback(
             Output("config-feedback", "children"),
@@ -1769,6 +1703,499 @@ class DashApp:
                     )
             
             return dash.no_update, dash.no_update, dash.no_update
+
+        # ===== CALLBACKS PARA CONTROL DE RED (ESTILO SENSORCONNECT) =====
+        
+        @app.callback(
+            Output("detected-nodes-list", "children"),
+            Input("node-detection-interval", "n_intervals"),
+        )
+        def update_detected_nodes_list(n):
+            """Actualiza la lista de nodos detectados cada 5 segundos."""
+            logger.info(f"[CONTROL-RED] Actualizando lista de nodos (intervalo #{n})")
+            logger.info(f"[CONTROL-RED] Sensores disponibles: {list(self.manager.sensors.keys())}")
+            nodes_cards = []
+            
+            for sensor_id, state in self.manager.sensors.items():
+                # Determinar estado
+                is_streaming = state.streaming
+                last_sample_time = getattr(state, '_last_sample_time', None)
+                
+                if is_streaming:
+                    if last_sample_time and (time.time() - last_sample_time) > 15:
+                        status_badge = dbc.Badge("DESCONECTADO", color="danger", className="me-2")
+                        connection_msg = html.Small(f"Sin datos por {int(time.time() - last_sample_time)}s", className="text-danger")
+                    else:
+                        status_badge = dbc.Badge("ACTIVO", color="success", className="me-2")
+                        connection_msg = html.Small("Conectado", className="text-success")
+                else:
+                    status_badge = dbc.Badge("IDLE", color="secondary", className="me-2")
+                    connection_msg = html.Small("Listo", className="text-muted")
+                
+                # Crear tarjeta del nodo
+                card = dbc.Card(
+                    [
+                        dbc.CardBody(
+                            [
+                                html.H6([
+                                    f"NODO {sensor_id}",
+                                    status_badge,
+                                ]),
+                                connection_msg,
+                                html.Hr(),
+                                html.P([
+                                    html.Strong("Stay: "),
+                                    state.info.stay_id,
+                                ], className="mb-1 small"),
+                                html.P([
+                                    html.Strong("Frecuencia: "),
+                                    f"{state.info.sample_rate_hz} Hz" if state.info.sample_rate_hz else "No configurado",
+                                ], className="mb-1 small"),
+                                html.P([
+                                    html.Strong("Ejes: "),
+                                    ", ".join([a.upper() for a in state.info.axes]) if state.info.axes else "---",
+                                ], className="mb-2 small"),
+                                dbc.Button(
+                                    "CONTROLAR",
+                                    id={"type": "btn-select-node", "index": sensor_id},
+                                    color="dark",
+                                    size="sm",
+                                    className="w-100",
+                                ),
+                            ]
+                        ),
+                    ],
+                    className="mb-3",
+                )
+                nodes_cards.append(card)
+            
+            logger.info(f"[CONTROL-RED] Total de tarjetas de nodos creadas: {len(nodes_cards)}")
+            
+            if not nodes_cards:
+                logger.warning("[CONTROL-RED] No se detectaron nodos")
+                return dbc.Alert("No se detectaron nodos. Esperando...", color="info")
+            
+            logger.info(f"[CONTROL-RED] Retornando {len(nodes_cards)} nodos detectados")
+            return nodes_cards
+
+        @app.callback(
+            Output("sampling-network-modal", "is_open"),
+            Output("network-config-table", "children"),
+            Input("btn-sampling-network", "n_clicks"),
+            Input("btn-close-network-modal", "n_clicks"),
+            Input("btn-apply-network", "n_clicks"),
+            State("sampling-network-modal", "is_open"),
+        )
+        def toggle_sampling_network_modal(n_open, n_close, n_apply, is_open):
+            """Abre/cierra modal de configuración de red."""
+            ctx = callback_context
+            if not ctx.triggered:
+                return is_open, dash.no_update
+            
+            trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+            
+            if trigger_id == "btn-sampling-network":
+                # Generar tabla de configuración
+                table_rows = []
+                for sensor_id, state in self.manager.sensors.items():
+                    row = html.Tr([
+                        html.Td(dbc.Checkbox(id={"type": "network-node-enable", "index": sensor_id}, value=True)),
+                        html.Td(sensor_id),
+                        html.Td(state.info.stay_id),
+                        html.Td(dbc.Select(
+                            id={"type": "network-node-rate", "index": sensor_id},
+                            options=[
+                                {"label": "128 Hz", "value": 128},
+                                {"label": "256 Hz", "value": 256},
+                                {"label": "512 Hz", "value": 512},
+                            ],
+                            value=state.info.sample_rate_hz or 256,
+                        )),
+                        html.Td([
+                            dbc.Checkbox(id={"type": "network-node-axis-x", "index": sensor_id}, value=True, label="X", inline=True, className="me-2"),
+                            dbc.Checkbox(id={"type": "network-node-axis-y", "index": sensor_id}, value=True, label="Y", inline=True, className="me-2"),
+                            dbc.Checkbox(id={"type": "network-node-axis-z", "index": sensor_id}, value=True, label="Z", inline=True),
+                        ]),
+                        html.Td(dbc.Select(
+                            id={"type": "network-node-format", "index": sensor_id},
+                            options=[
+                                {"label": "Float (32-bit)", "value": "float"},
+                                {"label": "UInt16", "value": "uint16"},
+                            ],
+                            value="float",
+                        )),
+                    ])
+                    table_rows.append(row)
+                
+                table = dbc.Table(
+                    [
+                        html.Thead(html.Tr([
+                            html.Th("Habilitar"),
+                            html.Th("Nodo"),
+                            html.Th("Stay"),
+                            html.Th("Frecuencia"),
+                            html.Th("Ejes"),
+                            html.Th("Formato"),
+                        ])),
+                        html.Tbody(table_rows),
+                    ],
+                    bordered=True,
+                    hover=True,
+                    responsive=True,
+                    striped=True,
+                )
+                
+                return True, table
+            
+            elif trigger_id in ["btn-close-network-modal", "btn-apply-network"]:
+                return False, dash.no_update
+            
+            return is_open, dash.no_update
+
+        @app.callback(
+            Output("network-feedback", "children"),
+            Output("network-state-store", "data"),
+            Input("btn-apply-network", "n_clicks"),
+            State({"type": "network-node-enable", "index": dash.dependencies.ALL}, "value"),
+            State({"type": "network-node-enable", "index": dash.dependencies.ALL}, "id"),
+            State({"type": "network-node-rate", "index": dash.dependencies.ALL}, "value"),
+            State({"type": "network-node-axis-x", "index": dash.dependencies.ALL}, "value"),
+            State({"type": "network-node-axis-y", "index": dash.dependencies.ALL}, "value"),
+            State({"type": "network-node-axis-z", "index": dash.dependencies.ALL}, "value"),
+            State({"type": "network-node-format", "index": dash.dependencies.ALL}, "value"),
+            prevent_initial_call=True,
+        )
+        def apply_and_start_sampling_network(n_clicks, enabled_list, id_list, rates, axis_x, axis_y, axis_z, formats):
+            """Configura e inicia múltiples nodos (Sampling Network)."""
+            if not n_clicks:
+                return dash.no_update, dash.no_update
+            
+            try:
+                success_sensors = []
+                failed_sensors = []
+                state_data = {}
+                
+                for i, (enabled, node_id_dict) in enumerate(zip(enabled_list, id_list)):
+                    if not enabled:
+                        continue
+                    
+                    sensor_id = node_id_dict["index"]
+                    rate = rates[i]
+                    
+                    # Construir lista de ejes activos
+                    axes = []
+                    if axis_x[i]:
+                        axes.append("x")
+                    if axis_y[i]:
+                        axes.append("y")
+                    if axis_z[i]:
+                        axes.append("z")
+                    
+                    data_format = formats[i]
+                    
+                    # Guardar configuración en state
+                    state_data[sensor_id] = {
+                        "rate": rate,
+                        "axes": axes,
+                        "format": data_format,
+                    }
+                    
+                    try:
+                        # Configurar e iniciar nodo
+                        self.manager.configure_sensor(sensor_id, sample_rate_hz=rate, axes=axes)
+                        self.manager.start(sensor_id)
+                        success_sensors.append(sensor_id)
+                        logger.info(f"Nodo {sensor_id} iniciado correctamente ({rate}Hz, {axes}, {data_format})")
+                    except Exception as e:
+                        failed_sensors.append((sensor_id, str(e)))
+                        logger.error(f"Error iniciando nodo {sensor_id}: {e}")
+                
+                # Generar feedback
+                if success_sensors and not failed_sensors:
+                    feedback = dbc.Alert(
+                        [
+                            html.H5("Sampling Network Iniciado", className="alert-heading"),
+                            html.P(f"Nodos activos: {', '.join(map(str, success_sensors))}"),
+                        ],
+                        color="success",
+                    )
+                elif success_sensors and failed_sensors:
+                    feedback = dbc.Alert(
+                        [
+                            html.H5("Sampling Network Iniciado Parcialmente", className="alert-heading"),
+                            html.P(f"Nodos exitosos: {', '.join(map(str, success_sensors))}"),
+                            html.P(f"Nodos fallidos: {', '.join([str(f[0]) for f in failed_sensors])}"),
+                            html.Hr(),
+                            html.P("Errores:", className="mb-0 font-weight-bold"),
+                            html.Ul([html.Li(f"Nodo {f[0]}: {f[1]}") for f in failed_sensors]),
+                        ],
+                        color="warning",
+                    )
+                else:
+                    feedback = dbc.Alert(
+                        [
+                            html.H5("No se pudo iniciar ningún nodo", className="alert-heading"),
+                            html.P("Errores:", className="mb-0"),
+                            html.Ul([html.Li(f"Nodo {f[0]}: {f[1]}") for f in failed_sensors]),
+                        ],
+                        color="danger",
+                    )
+                
+                return feedback, state_data
+                
+            except Exception as e:
+                logger.exception("Error crítico en apply_and_start_sampling_network")
+                return dbc.Alert(f"Error crítico: {str(e)}", color="danger"), {}
+
+        @app.callback(
+            Output("idle-feedback", "children"),
+            Input("btn-set-nodes-idle", "n_clicks"),
+            prevent_initial_call=True,
+        )
+        def set_all_nodes_to_idle(n_clicks):
+            """Detiene todos los nodos y los pone en modo IDLE."""
+            if not n_clicks:
+                return dash.no_update
+            
+            try:
+                # Detener todos los streams
+                stopped_sensors = []
+                for sensor_id in list(self.manager.sensors.keys()):
+                    if self.manager.sensors[sensor_id].streaming:
+                        self.manager.stop(sensor_id)
+                        stopped_sensors.append(sensor_id)
+                
+                logger.info("Todos los streams detenidos (CSV cerrados, InfluxDB detenido)")
+                
+                # Poner nodos en IDLE (solo en modo REAL)
+                if hasattr(self.manager.client, 'nodes'):
+                    idle_results = []
+                    for sensor_id, node in self.manager.client.nodes.items():
+                        try:
+                            logger.info(f"Poniendo nodo {sensor_id} en IDLE...")
+                            idle_status = node.setToIdle()
+                            
+                            # Esperar confirmación (máx 5 segundos)
+                            for _ in range(50):
+                                if idle_status.complete():
+                                    idle_results.append((sensor_id, True))
+                                    logger.info(f"Nodo {sensor_id} en IDLE")
+                                    break
+                                time.sleep(0.1)
+                            else:
+                                idle_results.append((sensor_id, False))
+                                logger.warning(f"Timeout esperando IDLE para nodo {sensor_id}")
+                        except Exception as e:
+                            idle_results.append((sensor_id, False))
+                            logger.error(f"Error poniendo nodo {sensor_id} en IDLE: {e}")
+                    
+                    success_count = sum(1 for r in idle_results if r[1])
+                    success_msg = f"Streams detenidos. Nodos en IDLE: {success_count}/{len(idle_results)}"
+                else:
+                    # Modo DEMO
+                    success_msg = f"Streams detenidos (modo DEMO). Sensores afectados: {len(stopped_sensors)}"
+                
+                # Feedback de éxito
+                feedback = dbc.Alert(
+                        [
+                            html.I(className="bi bi-check-circle-fill me-2"),
+                            html.Span(success_msg),
+                        ],
+                        color="success",
+                    )
+                
+                return feedback
+                
+            except Exception as e:
+                logger.exception("Error en set_all_nodes_to_idle")
+                return dbc.Alert(f"Error: {str(e)}", color="danger")
+        
+        @app.callback(
+            Output("individual-node-control-panel", "children"),
+            Input({"type": "btn-select-node", "index": dash.dependencies.ALL}, "n_clicks"),
+            State({"type": "btn-select-node", "index": dash.dependencies.ALL}, "id"),
+            prevent_initial_call=True,
+        )
+        def show_individual_node_controls(n_clicks_list, button_ids):
+            """Muestra controles individuales para el nodo seleccionado."""
+            ctx = callback_context
+            if not ctx.triggered:
+                return dash.no_update
+            
+            # Identificar qué botón se presionó
+            trigger_id = ctx.triggered[0]["prop_id"]
+            
+            # Extraer sensor_id del trigger
+            import json
+            try:
+                trigger_dict = json.loads(trigger_id.split(".")[0])
+                sensor_id = trigger_dict["index"]
+            except:
+                return dash.no_update
+            
+            # Obtener información del nodo
+            state = self.manager.sensors.get(sensor_id)
+            if not state:
+                return dbc.Alert(f"Nodo {sensor_id} no encontrado", color="danger")
+            
+            is_streaming = state.streaming
+            
+            # Crear panel de control individual
+            panel = dbc.Card(
+                [
+                    dbc.CardHeader(
+                        html.H5(f"Control Individual - Nodo {sensor_id}", className="mb-0")
+                    ),
+                    dbc.CardBody(
+                        [
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        [
+                                            html.P([
+                                                html.Strong("Stay: "),
+                                                state.info.stay_id,
+                                            ]),
+                                            html.P([
+                                                html.Strong("Estado: "),
+                                                dbc.Badge(
+                                                    "ACTIVO" if is_streaming else "IDLE",
+                                                    color="success" if is_streaming else "secondary",
+                                                ),
+                                            ]),
+                                            html.P([
+                                                html.Strong("Frecuencia: "),
+                                                f"{state.info.sample_rate_hz} Hz" if state.info.sample_rate_hz else "No configurado",
+                                            ]),
+                                            html.P([
+                                                html.Strong("Ejes: "),
+                                                ", ".join([a.upper() for a in state.info.axes]) if state.info.axes else "---",
+                                            ]),
+                                        ],
+                                        md=6,
+                                    ),
+                                    dbc.Col(
+                                        [
+                                            html.H6("Acciones:", className="mb-3"),
+                                            dbc.ButtonGroup(
+                                                [
+                                                    dbc.Button(
+                                                        [html.I(className="bi bi-play-fill me-1"), "Sample"],
+                                                        id={"type": "btn-node-sample", "index": sensor_id},
+                                                        color="primary",
+                                                        disabled=is_streaming,
+                                                    ),
+                                                    dbc.Button(
+                                                        [html.I(className="bi bi-pause-fill me-1"), "Set to Idle"],
+                                                        id={"type": "btn-node-idle", "index": sensor_id},
+                                                        color="warning",
+                                                        disabled=not is_streaming,
+                                                    ),
+                                                    dbc.Button(
+                                                        [html.I(className="bi bi-power me-1"), "Sleep"],
+                                                        id={"type": "btn-node-sleep", "index": sensor_id},
+                                                        color="secondary",
+                                                    ),
+                                                ],
+                                                className="w-100",
+                                                vertical=False,
+                                            ),
+                                            html.Div(
+                                                id={"type": "individual-node-feedback", "index": sensor_id},
+                                                className="mt-3",
+                                            ),
+                                        ],
+                                        md=6,
+                                    ),
+                                ],
+                            ),
+                        ]
+                    ),
+                ],
+                className="shadow-sm",
+            )
+            
+            return panel
+        
+        @app.callback(
+            Output({"type": "individual-node-feedback", "index": dash.dependencies.MATCH}, "children"),
+            Input({"type": "btn-node-sample", "index": dash.dependencies.MATCH}, "n_clicks"),
+            Input({"type": "btn-node-idle", "index": dash.dependencies.MATCH}, "n_clicks"),
+            Input({"type": "btn-node-sleep", "index": dash.dependencies.MATCH}, "n_clicks"),
+            State({"type": "btn-node-sample", "index": dash.dependencies.MATCH}, "id"),
+            prevent_initial_call=True,
+        )
+        def handle_individual_node_actions(n_sample, n_idle, n_sleep, button_id):
+            """Maneja las acciones individuales de cada nodo."""
+            ctx = callback_context
+            if not ctx.triggered:
+                return dash.no_update
+            
+            trigger_id = ctx.triggered[0]["prop_id"]
+            sensor_id = button_id["index"]
+            
+            try:
+                # Acción: Sample (configurar e iniciar)
+                if "btn-node-sample" in trigger_id:
+                    # Usar configuración actual del nodo
+                    state = self.manager.sensors.get(sensor_id)
+                    if state:
+                        rate = state.info.sample_rate_hz or 256
+                        axes = state.info.axes or ["x", "y", "z"]
+                        self.manager.configure_sensor(sensor_id, sample_rate_hz=rate, axes=axes)
+                    
+                    self.manager.start(sensor_id)
+                    logger.info(f"Nodo {sensor_id} iniciado individualmente")
+                    return dbc.Alert(f"Nodo {sensor_id} iniciado correctamente", color="success")
+                
+                # Acción: Set to Idle (detener)
+                elif "btn-node-idle" in trigger_id:
+                    self.manager.stop(sensor_id)
+                    
+                    # Poner en IDLE (solo modo REAL)
+                    if hasattr(self.manager.client, 'nodes'):
+                        node = self.manager.client.nodes.get(sensor_id)
+                        if node:
+                            try:
+                                idle_status = node.setToIdle()
+                                for _ in range(50):
+                                    if idle_status.complete():
+                                        break
+                                    time.sleep(0.1)
+                            except Exception as e:
+                                logger.warning(f"Error poniendo nodo {sensor_id} en IDLE: {e}")
+                    
+                    logger.info(f"Nodo {sensor_id} detenido")
+                    return dbc.Alert(f"Nodo {sensor_id} detenido", color="warning")
+                
+                # Acción: Sleep (modo ultra bajo consumo)
+                elif "btn-node-sleep" in trigger_id:
+                    self.manager.stop(sensor_id)
+                    
+                    if hasattr(self.manager.client, 'nodes'):
+                        node = self.manager.client.nodes.get(sensor_id)
+                        if node:
+                            try:
+                                node.sleep()
+                                logger.info(f"Nodo {sensor_id} en modo SLEEP")
+                                return dbc.Alert(
+                                    [
+                                        html.P(f"Nodo {sensor_id} en modo SLEEP"),
+                                        html.P("Requiere ciclo de power para despertar", className="mb-0 small"),
+                                    ],
+                                    color="secondary",
+                                )
+                            except Exception as e:
+                                logger.error(f"Error poniendo nodo {sensor_id} en SLEEP: {e}")
+                                return dbc.Alert(f"Nodo {sensor_id} no encontrado", color="danger")
+                    else:
+                        return dbc.Alert("Modo SLEEP no disponible en modo DEMO", color="info")
+                
+                return dash.no_update
+                
+            except Exception as e:
+                logger.exception(f"Error en acción individual para nodo {sensor_id}")
+                return dbc.Alert(f"Error: {str(e)}", color="danger")
 
     def run(self, host: str = "0.0.0.0", port: int = 8050) -> None:
         self.dash_app.run(host=host, port=port)
