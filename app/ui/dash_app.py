@@ -518,6 +518,11 @@ class DashApp:
                                                 dcc.Dropdown(
                                                     id="config-sample-rate-new",
                                                     options=[
+                                                        {"label": "1 Hz", "value": 1},
+                                                        {"label": "2 Hz", "value": 2},
+                                                        {"label": "4 Hz", "value": 4},
+                                                        {"label": "8 Hz", "value": 8},
+                                                        {"label": "16 Hz", "value": 16},
                                                         {"label": "32 Hz", "value": 32},
                                                         {"label": "64 Hz", "value": 64},
                                                         {"label": "128 Hz", "value": 128},
@@ -1805,6 +1810,13 @@ class DashApp:
                         html.Td(dbc.Select(
                             id={"type": "network-node-rate", "index": sensor_id},
                             options=[
+                                {"label": "1 Hz", "value": 1},
+                                {"label": "2 Hz", "value": 2},
+                                {"label": "4 Hz", "value": 4},
+                                {"label": "8 Hz", "value": 8},
+                                {"label": "16 Hz", "value": 16},
+                                {"label": "32 Hz", "value": 32},
+                                {"label": "64 Hz", "value": 64},
                                 {"label": "128 Hz", "value": 128},
                                 {"label": "256 Hz", "value": 256},
                                 {"label": "512 Hz", "value": 512},

@@ -426,13 +426,26 @@ class RealMSCLClient(MSCLClient):
                     node_config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
                     LOGGER.info("Set sampling mode: SYNC")
                     
-                    # Configurar frecuencia de muestreo (son constantes, no funciones)
-                    if sample_rate_hz == 512:
-                        node_config.sampleRate(mscl.WirelessTypes.sampleRate_512Hz)
-                    elif sample_rate_hz == 256:
-                        node_config.sampleRate(mscl.WirelessTypes.sampleRate_256Hz)
-                    elif sample_rate_hz == 128:
-                        node_config.sampleRate(mscl.WirelessTypes.sampleRate_128Hz)
+                    # Configurar frecuencia de muestreo dinámicamente (todas las frecuencias soportadas por G-Link-200)
+                    sample_rate_map = {
+                        1: mscl.WirelessTypes.sampleRate_1Hz,
+                        2: mscl.WirelessTypes.sampleRate_2Hz,
+                        4: mscl.WirelessTypes.sampleRate_4Hz,
+                        8: mscl.WirelessTypes.sampleRate_8Hz,
+                        16: mscl.WirelessTypes.sampleRate_16Hz,
+                        32: mscl.WirelessTypes.sampleRate_32Hz,
+                        64: mscl.WirelessTypes.sampleRate_64Hz,
+                        128: mscl.WirelessTypes.sampleRate_128Hz,
+                        256: mscl.WirelessTypes.sampleRate_256Hz,
+                        512: mscl.WirelessTypes.sampleRate_512Hz,
+                        1024: mscl.WirelessTypes.sampleRate_1024Hz,
+                        2048: mscl.WirelessTypes.sampleRate_2048Hz,
+                        4096: mscl.WirelessTypes.sampleRate_4096Hz,
+                    }
+                    
+                    if sample_rate_hz in sample_rate_map:
+                        node_config.sampleRate(sample_rate_map[sample_rate_hz])
+                        LOGGER.info(f"Set sample rate: {sample_rate_hz}Hz")
                     else:
                         LOGGER.warning(f"Unsupported sample rate {sample_rate_hz}Hz, using 256Hz")
                         node_config.sampleRate(mscl.WirelessTypes.sampleRate_256Hz)
