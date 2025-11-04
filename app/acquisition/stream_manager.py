@@ -666,7 +666,9 @@ class StreamManager:
         state.last_sample_timestamp = sample.timestamp
         state.estimated_fs = sample.fs_hz
 
-        dt = 1.0 / sample.fs_hz
+        # Conversión defensiva: asegurar que fs_hz sea float
+        fs_hz = float(sample.fs_hz) if isinstance(sample.fs_hz, str) else sample.fs_hz
+        dt = 1.0 / fs_hz
         start_time = sample.timestamp - len(sample.acceleration_g) * dt
 
         timestamps = start_time + np.arange(len(sample.acceleration_g)) * dt

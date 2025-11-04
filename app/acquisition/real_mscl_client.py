@@ -379,7 +379,9 @@ class RealMSCLClient(MSCLClient):
                         # NUEVO: Enviar datos al StreamingCoordinator (desacoplado)
                         if self.streaming_coordinator:
                             # Calcular timestamps individuales para cada muestra
-                            dt = 1.0 / info.sample_rate_hz  # Delta tiempo entre muestras
+                            # Conversión defensiva: asegurar que sample_rate_hz sea float
+                            sample_rate = float(info.sample_rate_hz) if isinstance(info.sample_rate_hz, str) else info.sample_rate_hz
+                            dt = 1.0 / sample_rate  # Delta tiempo entre muestras
                             samples_for_coordinator = [
                                 (timestamp + i * dt, x, y, z)
                                 for i, (x, y, z) in enumerate(accumulated_samples)
@@ -395,7 +397,9 @@ class RealMSCLClient(MSCLClient):
                                     )
                             self.streaming_coordinator.add_samples_batch(sensor_id, samples_for_coordinator)
                         elif self.raw_writer:
-                            dt = 1.0 / info.sample_rate_hz
+                            # Conversión defensiva: asegurar que sample_rate_hz sea float
+                            sample_rate = float(info.sample_rate_hz) if isinstance(info.sample_rate_hz, str) else info.sample_rate_hz
+                            dt = 1.0 / sample_rate
                             samples_for_writer = [
                                 (timestamp + i * dt, x, y, z)
                                 for i, (x, y, z) in enumerate(accumulated_samples)
