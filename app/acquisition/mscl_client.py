@@ -11,9 +11,13 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
+
+if TYPE_CHECKING:  # pragma: no cover - imported only for type checking
+    from app.acquisition.streaming_coordinator import StreamingCoordinator
+    from app.sinks.raw_writer import RawStreamingWriter
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +63,13 @@ class MSCLClient:
     def list_nodes(self) -> List[SensorInfo]:  # pragma: no cover - interface
         raise NotImplementedError
 
-    def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str]) -> None:  # pragma: no cover
+    def configure_node(
+        self,
+        sensor_id: str,
+        sample_rate_hz: float,
+        axes: Iterable[str],
+        data_format: str = "float",
+    ) -> None:  # pragma: no cover
         raise NotImplementedError
 
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:  # pragma: no cover
@@ -77,6 +87,9 @@ class DemoMSCLClient(MSCLClient):
         sensors: List[SensorInfo],
         noise_level: float = 0.02,
         signal_profiles: Optional[Dict[str, Dict[str, object]]] = None,
+        *,
+        streaming_coordinator: Optional["StreamingCoordinator"] = None,
+        raw_writer: Optional["RawStreamingWriter"] = None,
     ) -> None:
         self._sensors = {info.sensor_id: info for info in sensors}
         self._threads: Dict[str, threading.Thread] = {}
@@ -92,6 +105,8 @@ class DemoMSCLClient(MSCLClient):
             info.sensor_id: np.random.default_rng(abs(hash(info.sensor_id)) & 0xFFFFFFFF)
             for info in sensors
         }
+        self._streaming_coordinator = streaming_coordinator
+        self._raw_writer = raw_writer
 
     @staticmethod
     def _generate_default_profiles(sensors: List[SensorInfo]) -> Dict[str, Dict[str, object]]:
@@ -152,13 +167,25 @@ class DemoMSCLClient(MSCLClient):
             return []
         return list(self._sensors.values())
 
-    def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str]) -> None:
+    def configure_node(
+        self,
+        sensor_id: str,
+        sample_rate_hz: float,
+        axes: Iterable[str],
+        data_format: str = "float",
+    ) -> None:
         info = self._sensors.get(sensor_id)
         if info is None:
             raise KeyError(f"Unknown sensor {sensor_id}")
         info.sample_rate_hz = sample_rate_hz
         info.axes = list(axes)
-        logger.info("Configured demo sensor %s fs=%.2f axes=%s", sensor_id, sample_rate_hz, axes)
+        logger.info(
+            "Configured demo sensor %s fs=%.2f axes=%s format=%s",
+            sensor_id,
+            sample_rate_hz,
+            axes,
+            data_format,
+        )
         self._sample_counters[sensor_id] = 0
 
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:
@@ -220,13 +247,44 @@ class DemoMSCLClient(MSCLClient):
                 noise = rng.normal(scale=self._noise_level, size=batch.shape)
                 batch += noise
 
+                batch_timestamp = time.time()
                 sample = Sample(
                     sensor_id=info.sensor_id,
                     stay_id=info.stay_id,
                     fs_hz=info.sample_rate_hz,
-                    timestamp=time.time(),
+                    timestamp=batch_timestamp,
                     acceleration_g=batch,
                 )
+
+                per_sample: Optional[List[Tuple[float, float, float, float]]] = None
+                if (self._streaming_coordinator or self._raw_writer) and batch.shape[0] > 0:
+                    if info.sample_rate_hz <= 0:
+                        logger.warning(
+                            "Invalid sample rate for demo sensor %s; skipping coordinator dispatch",
+                            sensor_id,
+                        )
+                    else:
+                        dt = 1.0 / info.sample_rate_hz
+                        start_epoch = batch_timestamp - (batch.shape[0] - 1) * dt
+                        per_sample = [
+                            (
+                                start_epoch + idx * dt,
+                                float(row[0]),
+                                float(row[1]),
+                                float(row[2]),
+                            )
+                            for idx, row in enumerate(batch)
+                        ]
+                        if self._streaming_coordinator:
+                            self._streaming_coordinator.add_samples_batch(sensor_id, per_sample)
+                        if self._raw_writer:
+                            try:
+                                self._raw_writer.append_batch(sensor_id, per_sample)
+                            except Exception as exc:  # pragma: no cover - defensive logging
+                                logger.warning(
+                                    "Failed to persist demo batch for %s: %s", sensor_id, exc
+                                )
+
                 callback(sample)
             logger.info("Demo stream stopped for %s", sensor_id)
 
@@ -453,13 +511,21 @@ class HttpMSCLClient(MSCLClient):
                 logger.debug("Skipping malformed sensor entry %s: %s", entry, exc)
         return sensors
 
-    def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str]) -> None:
-        body = json.dumps(
-            {
-                "sample_rate_hz": sample_rate_hz,
-                "axes": list(axes),
-            }
-        ).encode("utf-8")
+    def configure_node(
+        self,
+        sensor_id: str,
+        sample_rate_hz: float,
+        axes: Iterable[str],
+        data_format: str = "float",
+    ) -> None:
+        payload = {
+            "sample_rate_hz": sample_rate_hz,
+            "axes": list(axes),
+        }
+        if data_format:
+            payload["data_format"] = data_format
+
+        body = json.dumps(payload).encode("utf-8")
         self._perform_request("POST", f"/nodes/{sensor_id}/configure", body=body)
         logger.info(
             "Configured sensor %s with fs=%.3f and axes=%s via HTTP gateway",
@@ -530,7 +596,13 @@ class HttpMSCLClient(MSCLClient):
         logger.debug("Stopped HTTP streaming for sensor %s", sensor_id)
 
 
-def create_demo_client(stays_config: List[Dict[str, str]], default_fs: float) -> DemoMSCLClient:
+def create_demo_client(
+    stays_config: List[Dict[str, str]],
+    default_fs: float,
+    *,
+    streaming_coordinator: Optional["StreamingCoordinator"] = None,
+    raw_writer: Optional["RawStreamingWriter"] = None,
+) -> DemoMSCLClient:
     sensors = [
         SensorInfo(
             sensor_id=stay["sensor_id"],
@@ -540,7 +612,11 @@ def create_demo_client(stays_config: List[Dict[str, str]], default_fs: float) ->
         )
         for stay in stays_config
     ]
-    client = DemoMSCLClient(sensors)
+    client = DemoMSCLClient(
+        sensors,
+        streaming_coordinator=streaming_coordinator,
+        raw_writer=raw_writer,
+    )
     client.connect_gateway("demo-gateway", 5500)
     return client
 

@@ -622,10 +622,19 @@ class StreamManager:
         state.last_sample_timestamp = sample.timestamp
         state.estimated_fs = sample.fs_hz
 
-        dt = 1.0 / sample.fs_hz
-        start_time = sample.timestamp - len(sample.acceleration_g) * dt
+        if sample.fs_hz <= 0:
+            logger.warning("Sample for %s has invalid sampling rate %.3f", sensor_id, sample.fs_hz)
+            return
 
-        timestamps = start_time + np.arange(len(sample.acceleration_g)) * dt
+        sample_count = len(sample.acceleration_g)
+        if sample_count == 0:
+            logger.warning("Sample for %s contains no data", sensor_id)
+            return
+
+        dt = 1.0 / sample.fs_hz
+        start_time = sample.timestamp - (sample_count - 1) * dt
+
+        timestamps = start_time + np.arange(sample_count) * dt
         records = []
         valid_samples = []  # Para análisis: solo muestras válidas
         rolling_samples = []  # 🎬 Para el RollingRecorder
