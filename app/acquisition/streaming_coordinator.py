@@ -287,6 +287,29 @@ class StreamingCoordinator:
             for buffer in self._buffers.values():
                 buffer.clear()
             logger.info("[CLEAN] Todos los buffers limpiados")
+    
+    def reconfigure_sensor(self, sensor_id: str, sample_rate_hz: int) -> None:
+        """
+        Reconfigura un sensor con nueva frecuencia de muestreo.
+        Recrea el buffer con la nueva configuración.
+        
+        Args:
+            sensor_id: ID del sensor a reconfigurar
+            sample_rate_hz: Nueva frecuencia de muestreo en Hz
+        """
+        with self._buffers_lock:
+            # Eliminar buffer anterior si existe
+            if sensor_id in self._buffers:
+                logger.info(f"[COORDINATOR] Reconfigurando sensor {sensor_id}: {sample_rate_hz}Hz")
+                del self._buffers[sensor_id]
+            
+            # Crear nuevo buffer con nueva frecuencia
+            self._buffers[sensor_id] = SensorBuffer(
+                sensor_id=sensor_id,
+                duration_sec=self.buffer_duration_sec,
+                sample_rate_hz=sample_rate_hz,
+            )
+            logger.info(f"[COORDINATOR] Buffer recreado para {sensor_id} @ {sample_rate_hz}Hz")
 
 
 __all__ = ["StreamingCoordinator", "SensorBuffer", "AccelSample"]

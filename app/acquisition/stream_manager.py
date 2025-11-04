@@ -224,6 +224,20 @@ class RealtimeDataStore:
             self._last_read_index[sensor_id] = total_count
             
             return np.array(new_timestamps), np.array(new_samples), total_count
+    
+    def reconfigure_sensor(self, sensor_id: str, sample_rate_hz: int) -> None:
+        """Reconfigura un sensor con nueva frecuencia de muestreo.
+        
+        Args:
+            sensor_id: ID del sensor a reconfigurar
+            sample_rate_hz: Nueva frecuencia de muestreo en Hz
+        """
+        with self._lock:
+            # Recrear buffer de visualización con nueva frecuencia
+            maxlen = self._buffer_seconds * sample_rate_hz
+            self._display_buffers[sensor_id] = (deque(maxlen=maxlen), deque(maxlen=maxlen))
+            self._last_read_index[sensor_id] = 0
+            LOGGER.info(f"[REALTIME-STORE] Sensor {sensor_id} reconfigurado: {sample_rate_hz}Hz (buffer: {maxlen} samples)")
 
 
 class SensorBuffer:
@@ -416,6 +430,10 @@ class StreamManager:
         self.mode.setdefault(sensor_id, "AUTO")
         self.guided_f1.setdefault(sensor_id, None)
         self.guided_tol.setdefault(sensor_id, 0.1)
+        
+        # Reconfigurar RealtimeDataStore con nueva frecuencia
+        if self.realtime_store:
+            self.realtime_store.reconfigure_sensor(sensor_id, int(sample_rate))
 
     def start(self, sensor_id: str) -> None:
         try:

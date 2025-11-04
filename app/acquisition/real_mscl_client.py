@@ -143,6 +143,11 @@ class RealMSCLClient(MSCLClient):
         info.sample_rate_hz = sample_rate_hz
         info.axes = list(axes)
         
+        # Reconfigurar StreamingCoordinator con nueva frecuencia de muestreo
+        if self.streaming_coordinator:
+            self.streaming_coordinator.reconfigure_sensor(sensor_id, int(sample_rate_hz))
+            LOGGER.info(f"StreamingCoordinator reconfigured for {sensor_id} @ {sample_rate_hz}Hz")
+        
         # Configurar formato de datos
         node = self.nodes.get(sensor_id)
         if node:
@@ -303,8 +308,10 @@ class RealMSCLClient(MSCLClient):
                                 LOGGER.warning(f"Could not parse sample {i}: {parse_err}")
                                 continue
                     
-                    # Send accumulated samples in batches (every ~128 samples or ~1 second worth)
-                    if len(accumulated_samples) >= 256:
+                    # Send accumulated samples in batches (every ~1 second worth of data)
+                    # Dynamically adjust batch size based on sample rate
+                    batch_threshold = max(int(info.sample_rate_hz), 64)  # At least 64 samples, or 1 second of data
+                    if len(accumulated_samples) >= batch_threshold:
                         # Create numpy array: shape (num_samples, 3)
                         acc_data = np.array(accumulated_samples, dtype=np.float64)
                         
