@@ -13,7 +13,7 @@ analysis:
   window_sec: 30
 default_fs_hz: 256
 modes:
-  demo: false
+  demo: true
 storage:
   base_dir: ./data
   raw_stream:
