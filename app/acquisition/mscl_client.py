@@ -7,7 +7,6 @@ import json
 import http.client
 import logging
 import math
-import random
 import socket
 import threading
 import time
@@ -73,16 +72,59 @@ class MSCLClient:
 class DemoMSCLClient(MSCLClient):
     """Demo client that synthesizes accelerometer signals."""
 
-    def __init__(self, sensors: List[SensorInfo], noise_level: float = 0.02) -> None:
+    def __init__(
+        self,
+        sensors: List[SensorInfo],
+        noise_level: float = 0.02,
+        signal_profiles: Optional[Dict[str, Dict[str, object]]] = None,
+    ) -> None:
         self._sensors = {info.sensor_id: info for info in sensors}
         self._threads: Dict[str, threading.Thread] = {}
         self._stops: Dict[str, threading.Event] = {}
         self._callbacks: Dict[str, Callable[[Sample], None]] = {}
         self._noise_level = noise_level
-        self._phase: Dict[str, float] = {info.sensor_id: 0.0 for info in sensors}
         self._gateway_host: Optional[str] = None
         self._gateway_port: Optional[int] = None
         self._connected = False
+        self._signal_profiles = signal_profiles or self._generate_default_profiles(sensors)
+        self._sample_counters: Dict[str, int] = {info.sensor_id: 0 for info in sensors}
+        self._rngs: Dict[str, np.random.Generator] = {
+            info.sensor_id: np.random.default_rng(abs(hash(info.sensor_id)) & 0xFFFFFFFF)
+            for info in sensors
+        }
+
+    @staticmethod
+    def _generate_default_profiles(sensors: List[SensorInfo]) -> Dict[str, Dict[str, object]]:
+        """Generate deterministic harmonic profiles for each sensor."""
+
+        base_fundamentals = [1.2, 1.8, 2.4, 3.1, 3.8, 4.5, 5.2]
+        profiles: Dict[str, Dict[str, object]] = {}
+        for index, info in enumerate(sensors):
+            fundamental = base_fundamentals[index % len(base_fundamentals)]
+            rng = np.random.default_rng(abs(hash((info.sensor_id, "profile"))) & 0xFFFFFFFF)
+            harmonics = [
+                {
+                    "frequency": fundamental * order,
+                    "amplitude": amp,
+                    "phase": rng.uniform(0.0, 2.0 * math.pi),
+                }
+                for order, amp in zip(range(1, 4), [1.0, 0.55, 0.3])
+            ]
+            axis_weights = rng.uniform(0.65, 1.35, size=3)
+            axis_weights = axis_weights / np.linalg.norm(axis_weights, ord=1)
+            axis_phase_offsets = rng.uniform(0.0, math.pi / 1.5, size=3)
+            modulation = {
+                "frequency": max(fundamental * 0.12, 0.05),
+                "depth": 0.12,
+                "phase": rng.uniform(0.0, 2.0 * math.pi),
+            }
+            profiles[info.sensor_id] = {
+                "harmonics": harmonics,
+                "axis_weights": axis_weights,
+                "axis_phase_offsets": axis_phase_offsets,
+                "modulation": modulation,
+            }
+        return profiles
 
     def connect_gateway(self, host: str, port: int) -> GatewayStatus:
         self._gateway_host = host
@@ -117,6 +159,7 @@ class DemoMSCLClient(MSCLClient):
         info.sample_rate_hz = sample_rate_hz
         info.axes = list(axes)
         logger.info("Configured demo sensor %s fs=%.2f axes=%s", sensor_id, sample_rate_hz, axes)
+        self._sample_counters[sensor_id] = 0
 
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:
         if not self._connected:
@@ -130,23 +173,53 @@ class DemoMSCLClient(MSCLClient):
         info = self._sensors[sensor_id]
 
         def run() -> None:
-            logger.info("Demo stream started for %s", sensor_id)
-            dt = 1.0 / info.sample_rate_hz
-            t = time.time()
-            f1 = random.uniform(1.5, 3.5)
+            profile = self._signal_profiles[info.sensor_id]
+            harmonics = profile["harmonics"]
+            modulation = profile.get("modulation")
+            axis_weights = profile["axis_weights"]
+            axis_phase_offsets = profile["axis_phase_offsets"]
+            fundamental = harmonics[0]["frequency"]
+            logger.info(
+                "Demo stream started for %s (fundamental %.2f Hz, harmonics=%s)",
+                sensor_id,
+                fundamental,
+                ", ".join(f"{h['frequency']:.2f}Hz" for h in harmonics),
+            )
+            self._sample_counters[sensor_id] = 0
+            rng = self._rngs[info.sensor_id]
+            samples_per_batch = int(info.sample_rate_hz)
             while not stop_event.is_set():
-                samples = []
-                for _ in range(int(info.sample_rate_hz)):
-                    t += dt
-                    base_signal = math.sin(2 * math.pi * f1 * t)
-                    noise = np.random.normal(scale=self._noise_level, size=3)
-                    accel = np.array([
-                        base_signal + noise[0],
-                        0.5 * base_signal + noise[1],
-                        0.2 * base_signal + noise[2],
-                    ])
-                    samples.append(accel)
-                batch = np.stack(samples)
+                start_index = self._sample_counters[sensor_id]
+                sample_idx = np.arange(start_index, start_index + samples_per_batch)
+                self._sample_counters[sensor_id] += samples_per_batch
+                time_values = sample_idx / info.sample_rate_hz
+
+                axis_signals: List[np.ndarray] = []
+                for axis_idx in range(3):
+                    axis_signal = np.zeros_like(time_values)
+                    phase_offset = axis_phase_offsets[axis_idx]
+                    weight = axis_weights[axis_idx]
+                    for harmonic in harmonics:
+                        axis_signal += (
+                            weight
+                            * harmonic["amplitude"]
+                            * np.sin(
+                                2.0 * math.pi * harmonic["frequency"] * time_values
+                                + harmonic["phase"]
+                                + phase_offset
+                            )
+                        )
+                    if modulation:
+                        axis_signal *= 1.0 + modulation["depth"] * np.sin(
+                            2.0 * math.pi * modulation["frequency"] * time_values
+                            + modulation["phase"]
+                        )
+                    axis_signals.append(axis_signal)
+
+                batch = np.column_stack(axis_signals)
+                noise = rng.normal(scale=self._noise_level, size=batch.shape)
+                batch += noise
+
                 sample = Sample(
                     sensor_id=info.sensor_id,
                     stay_id=info.stay_id,

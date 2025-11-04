@@ -6,3 +6,17 @@ stays:
     green_max: 100.0
     orange_max: 200.0
     yellow_max: 150.0
+- k_coefficient_N_per_Hz2: 1.1
+  sensor_id: 10604
+  stay_id: sensor_2
+  thresholds_kN:
+    green_max: 110.0
+    orange_max: 210.0
+    yellow_max: 160.0
+- k_coefficient_N_per_Hz2: 0.9
+  sensor_id: 10605
+  stay_id: sensor_3
+  thresholds_kN:
+    green_max: 95.0
+    orange_max: 180.0
+    yellow_max: 140.0
