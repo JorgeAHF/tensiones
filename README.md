@@ -62,6 +62,29 @@ python -m app.main
 
 La aplicación levanta un servidor Dash en `http://0.0.0.0:8050`.
 
+### Guía "para dummies" del modo DEMO
+
+1. **Prepara Python**: instala [Python 3.10+](https://www.python.org/downloads/) y abre una terminal.
+2. **Descarga el proyecto**: clona o descomprime esta carpeta y entra al directorio `tensiones/`.
+3. **Crea un entorno aislado** (opcional pero recomendado):
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # En Windows usa: .venv\\Scripts\\activate
+   ```
+4. **Instala las dependencias**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+5. **Lanza el modo demo**:
+   ```bash
+   python -m app.main
+   ```
+6. **Abre el navegador** y visita `http://localhost:8050` (o la dirección que muestre la terminal).
+7. **Conecta el demo**: en la pestaña **Red/Gateway** deja los valores por defecto y pulsa **Conectar** si no lo hizo automáticamente.
+8. **Activa un sensor demo**: ve a **Configuración de Sensores**, selecciona el sensor (ej. `10603`) y pulsa **Iniciar streaming**.
+9. **Verifica las gráficas**: regresa a la pestaña **Monitoreo** y asegúrate de que las curvas del acelerómetro se muevan. Si las líneas están quietas, revisa que el sensor siga con estado "Streaming" y repite el paso anterior.
+10. **Detén la demo** cuando termines: vuelve a la pestaña de configuración y pulsa **Detener streaming**, luego cierra la terminal con `Ctrl+C`.
+
 ### Conexión a gateway MSCL
 
 - Por defecto el modo demo auto-conecta contra un gateway simulado según `mscl_gateway` en `app.yaml`.

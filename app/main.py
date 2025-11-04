@@ -52,11 +52,19 @@ def build_stays(stays_cfg: Dict) -> List[StayDefinition]:
 def _build_demo_client(
     stays: List[StayDefinition],
     default_fs: float,
+    *,
+    streaming_coordinator: Optional[StreamingCoordinator] = None,
+    raw_writer: Optional[RawStreamingWriter] = None,
 ) -> DemoMSCLClient:
     stays_config = [
         {"sensor_id": stay.sensor_id, "stay_id": stay.stay_id} for stay in stays
     ]
-    return create_demo_client(stays_config, default_fs)
+    return create_demo_client(
+        stays_config,
+        default_fs,
+        streaming_coordinator=streaming_coordinator,
+        raw_writer=raw_writer,
+    )
 
 
 def create_client(
@@ -70,7 +78,12 @@ def create_client(
 
     if demo_mode:
         LOGGER.info("Running in DEMO mode")
-        return _build_demo_client(stays, default_fs)
+        return _build_demo_client(
+            stays,
+            default_fs,
+            streaming_coordinator=streaming_coordinator,
+            raw_writer=raw_writer,
+        )
 
     try:
         import mscl  # type: ignore
@@ -78,7 +91,12 @@ def create_client(
         LOGGER.warning(
             "MSCL library not available (%s); falling back to DEMO mode", exc
         )
-        return _build_demo_client(stays, default_fs)
+        return _build_demo_client(
+            stays,
+            default_fs,
+            streaming_coordinator=streaming_coordinator,
+            raw_writer=raw_writer,
+        )
 
     LOGGER.info("Connecting to real MSCL Gateway at 192.168.8.101:5000")
 
@@ -89,7 +107,12 @@ def create_client(
             "RealMSCLClient dependencies missing (%s); falling back to DEMO mode",
             exc,
         )
-        return _build_demo_client(stays, default_fs)
+        return _build_demo_client(
+            stays,
+            default_fs,
+            streaming_coordinator=streaming_coordinator,
+            raw_writer=raw_writer,
+        )
 
     try:
         connection = mscl.Connection.TcpIp("192.168.8.101", 5000)
@@ -116,7 +139,12 @@ def create_client(
     except Exception as exc:
         LOGGER.error("Failed to connect to Gateway: %s", exc)
         LOGGER.info("Falling back to DEMO mode after connection failure")
-        return _build_demo_client(stays, default_fs)
+        return _build_demo_client(
+            stays,
+            default_fs,
+            streaming_coordinator=streaming_coordinator,
+            raw_writer=raw_writer,
+        )
 
 
 def parse_args() -> argparse.Namespace:
