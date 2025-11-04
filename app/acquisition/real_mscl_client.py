@@ -217,6 +217,7 @@ class RealMSCLClient(MSCLClient):
     
     def _stream_worker(self, sensor_id: str, node: mscl.WirelessNode, callback: Callable[[Sample], None], stop_event: threading.Event) -> None:
         """Worker thread that reads data from node and calls callback."""
+        global LOGGER  # Ensure thread has access to module-level LOGGER
         info = self._sensors[sensor_id]
         
         try:
@@ -381,6 +382,7 @@ class RealMSCLClient(MSCLClient):
     
     def _configure_and_start_node(self, node: mscl.WirelessNode, sample_rate_hz: float) -> None:
         """Configure and start sampling using SyncSamplingNetwork with multiple retry strategies."""
+        global LOGGER  # Ensure thread has access to module-level LOGGER
         
         # Strategy 1: Try with existing SyncSamplingNetwork (if already created)
         try:
@@ -502,7 +504,7 @@ class RealMSCLClient(MSCLClient):
                 LOGGER.info("Starting sync sampling network...")
                 self._sync_network.startSampling()
                 self._sync_network_started = True
-                LOGGER.info("SUCCESS: Sync sampling network started - continuous @ {sample_rate_hz}Hz!")
+                LOGGER.info(f"SUCCESS: Sync sampling network started - continuous @ {sample_rate_hz}Hz!")
                 return  # Success!
                 
         except Exception as e:
