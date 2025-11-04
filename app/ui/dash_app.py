@@ -1883,6 +1883,8 @@ class DashApp:
         )
         def apply_and_start_sampling_network(n_clicks, enabled_list, id_list, rates, axis_x, axis_y, axis_z, formats):
             """Configura e inicia múltiples nodos (Sampling Network)."""
+            import traceback  # Importar al inicio del callback
+            
             logger.info(f"[SAMPLING NETWORK] Callback ejecutado - n_clicks={n_clicks}, enabled_list={enabled_list}")
             
             if not n_clicks:
@@ -1926,6 +1928,27 @@ class DashApp:
                         success_sensors.append(sensor_id)
                         logger.info(f"Nodo {sensor_id} iniciado correctamente ({rate}Hz, {axes}, {data_format})")
                     except Exception as e:
+                        # CRÍTICO: Capturar traceback completo
+                        error_detail = traceback.format_exc()
+                        
+                        # Registrar en el logger con TODOS los detalles
+                        logger.error(
+                            f"Error iniciando nodo {sensor_id}:\n"
+                            f"Tipo de error: {type(e).__name__}\n"
+                            f"Mensaje: {str(e)}\n"
+                            f"Traceback completo:\n{error_detail}"
+                        )
+                        
+                        # También imprimir a consola para debugging inmediato
+                        print(f"\n{'='*80}")
+                        print(f"ERROR DETALLADO - Nodo {sensor_id}")
+                        print(f"{'='*80}")
+                        print(f"Tipo: {type(e).__name__}")
+                        print(f"Mensaje: {str(e)}")
+                        print(f"\nTraceback completo:")
+                        print(error_detail)
+                        print(f"{'='*80}\n")
+                        
                         failed_sensors.append((sensor_id, str(e)))
                         logger.error(f"Error iniciando nodo {sensor_id}: {e}")
                 

@@ -217,7 +217,16 @@ class RealMSCLClient(MSCLClient):
     
     def _stream_worker(self, sensor_id: str, node: mscl.WirelessNode, callback: Callable[[Sample], None], stop_event: threading.Event) -> None:
         """Worker thread that reads data from node and calls callback."""
-        global LOGGER  # Ensure thread has access to module-level LOGGER
+        # CRÍTICO: Envolver TODO en try-except para capturar errores del thread
+        import traceback
+        import sys
+        
+        # DEBUG: Verificar que LOGGER existe y funciona
+        print(f"[DEBUG] Thread {threading.current_thread().name} started", file=sys.stderr)
+        print(f"[DEBUG] LOGGER object: {LOGGER}", file=sys.stderr)
+        print(f"[DEBUG] LOGGER type: {type(LOGGER)}", file=sys.stderr)
+        print(f"[DEBUG] Module globals has LOGGER: {'LOGGER' in globals()}", file=sys.stderr)
+        
         info = self._sensors[sensor_id]
         
         try:
@@ -367,9 +376,25 @@ class RealMSCLClient(MSCLClient):
                         accumulated_samples = []  # Reset accumulator
                 
                 time.sleep(0.01)  # Small delay to prevent CPU spinning
-                
+        
         except Exception as e:
-            LOGGER.error(f"Error in stream worker for {sensor_id}: {e}")
+            # CRÍTICO: Capturar y registrar CUALQUIER excepción con traceback completo
+            error_msg = f"FATAL ERROR in stream worker for {sensor_id}"
+            full_traceback = traceback.format_exc()
+            
+            # Registrar en el logger con traceback completo
+            LOGGER.error(f"{error_msg}:\n{full_traceback}")
+            
+            # También imprimir a stderr para debugging
+            print(f"\n{'='*80}", file=sys.stderr)
+            print(f"{error_msg}", file=sys.stderr)
+            print(f"{'='*80}", file=sys.stderr)
+            print(full_traceback, file=sys.stderr)
+            print(f"{'='*80}\n", file=sys.stderr)
+            
+            # Re-lanzar la excepción para que el caller pueda manejarla
+            raise
+        
         finally:
             LOGGER.info(f"Stream worker for {sensor_id} shutting down...")
             # Don't try to stop the node, it may cause errors
@@ -382,10 +407,11 @@ class RealMSCLClient(MSCLClient):
     
     def _configure_and_start_node(self, node: mscl.WirelessNode, sample_rate_hz: float) -> None:
         """Configure and start sampling using SyncSamplingNetwork with multiple retry strategies."""
-        global LOGGER  # Ensure thread has access to module-level LOGGER
+        import traceback
+        import sys
         
-        # Strategy 1: Try with existing SyncSamplingNetwork (if already created)
         try:
+            # Strategy 1: Try with existing SyncSamplingNetwork (if already created)
             if self._sync_network is None:
                 LOGGER.info("Creating SyncSamplingNetwork...")
                 self._sync_network = mscl.SyncSamplingNetwork(self.base_station)
