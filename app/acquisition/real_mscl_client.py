@@ -139,9 +139,11 @@ class RealMSCLClient(MSCLClient):
         if sensor_id not in self._sensors:
             raise KeyError(f"Unknown sensor {sensor_id}")
         
+        # Asegurar que sample_rate_hz sea float PRIMERO (puede venir como string desde UI)
+        sample_rate_hz = float(sample_rate_hz)
+        
         info = self._sensors[sensor_id]
-        # Asegurar que sample_rate_hz sea float (puede venir como string desde UI)
-        info.sample_rate_hz = float(sample_rate_hz)
+        info.sample_rate_hz = sample_rate_hz
         info.axes = list(axes)
         
         # Reconfigurar StreamingCoordinator con nueva frecuencia de muestreo
