@@ -33991,3 +33991,8 @@ HTTP response body: {"code":"unauthorized","message":"unauthorized access"}
 2025-10-30 16:47:55,706 | INFO | werkzeug | Thread-3075 (process_request_thread) | 127.0.0.1 - - [30/Oct/2025 16:47:55] "POST /_dash-update-component HTTP/1.1" 200 -
 2025-10-30 16:47:55,744 | INFO | werkzeug | Thread-3079 (process_request_thread) | 127.0.0.1 - - [30/Oct/2025 16:47:55] "POST /_dash-update-component HTTP/1.1" 200 -
 2025-10-30 16:47:55,920 | INFO | werkzeug | Thread-3078 (process_request_thread) | 127.0.0.1 - - [30/Oct/2025 16:47:55] "POST /_dash-update-component HTTP/1.1" 200 -
+2025-11-04 12:30:40,586 | INFO | app.acquisition.streaming_coordinator | MainThread | [COORDINATOR] StreamingCoordinator inicializado: buffer=300s, fs=256Hz
+2025-11-04 12:30:40,587 | INFO | __main__ | MainThread | [OK] StreamingCoordinator creado
+2025-11-04 12:30:40,587 | INFO | __main__ | MainThread | [OK] Raw streaming writer inicializado en C:\Tensiones\tensiones\data\raw
+2025-11-04 12:30:40,593 | WARNING | __main__ | MainThread | [INFLUXDB] No se pudo inicializar InfluxDB: No module named 'influxdb_client'
+2025-11-04 12:30:40,594 | INFO | __main__ | MainThread | Connecting to real MSCL Gateway at 192.168.8.101:5000
