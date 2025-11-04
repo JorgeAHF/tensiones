@@ -237,7 +237,7 @@ class RealtimeDataStore:
             maxlen = self._buffer_seconds * sample_rate_hz
             self._display_buffers[sensor_id] = (deque(maxlen=maxlen), deque(maxlen=maxlen))
             self._last_read_index[sensor_id] = 0
-            LOGGER.info(f"[REALTIME-STORE] Sensor {sensor_id} reconfigurado: {sample_rate_hz}Hz (buffer: {maxlen} samples)")
+            logger.info(f"[REALTIME-STORE] Sensor {sensor_id} reconfigurado: {sample_rate_hz}Hz (buffer: {maxlen} samples)")
 
 
 class SensorBuffer:
@@ -470,8 +470,29 @@ class StreamManager:
         def callback(sample: Sample) -> None:
             self._handle_sample(sensor_id, sample)
 
-        self.client.start_streaming(sensor_id, callback)
-        state.streaming = True
+        try:
+            import traceback
+            logger.info(f"[STREAM_MANAGER] Calling start_streaming for {sensor_id}...")
+            self.client.start_streaming(sensor_id, callback)
+            state.streaming = True
+            logger.info(f"[STREAM_MANAGER] start_streaming completed for {sensor_id}")
+        except Exception as e:
+            error_detail = traceback.format_exc()
+            logger.error(
+                f"[STREAM_MANAGER] FATAL ERROR starting streaming for {sensor_id}:\n"
+                f"Error type: {type(e).__name__}\n"
+                f"Error message: {str(e)}\n"
+                f"Full traceback:\n{error_detail}"
+            )
+            print(f"\n{'='*80}")
+            print(f"[STREAM_MANAGER] FATAL ERROR starting streaming for {sensor_id}")
+            print(f"{'='*80}")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
+            print(f"\nFull traceback:")
+            print(error_detail)
+            print(f"{'='*80}\n")
+            raise
 
     def stop(self, sensor_id: str) -> None:
         self.client.stop_streaming(sensor_id)

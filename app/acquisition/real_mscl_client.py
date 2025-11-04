@@ -174,6 +174,11 @@ class RealMSCLClient(MSCLClient):
     
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:
         """Start streaming data from a sensor."""
+        import traceback
+        import sys
+        
+        LOGGER.info(f"[START_STREAMING] Called for sensor {sensor_id}")
+        
         if sensor_id not in self.nodes:
             LOGGER.warning(f"Cannot start streaming: sensor {sensor_id} not available")
             return
@@ -187,16 +192,54 @@ class RealMSCLClient(MSCLClient):
         self._stops[sensor_id] = stop_event
         self._callbacks[sensor_id] = callback
         
+        LOGGER.info(f"[START_STREAMING] Creating thread for {sensor_id}...")
+        
         # Start streaming thread
-        thread = threading.Thread(
-            target=self._stream_worker,
-            args=(sensor_id, node, callback, stop_event),
-            daemon=True,
-            name=f"Stream-{sensor_id}"
-        )
-        self._threads[sensor_id] = thread
-        thread.start()
-        LOGGER.info(f"Started streaming for sensor {sensor_id}")
+        try:
+            thread = threading.Thread(
+                target=self._stream_worker,
+                args=(sensor_id, node, callback, stop_event),
+                daemon=True,
+                name=f"Stream-{sensor_id}"
+            )
+            self._threads[sensor_id] = thread
+            
+            LOGGER.info(f"[START_STREAMING] Starting thread for {sensor_id}...")
+            thread.start()
+            
+            LOGGER.info(f"[START_STREAMING] Thread started for sensor {sensor_id} - thread.is_alive()={thread.is_alive()}")
+            
+            # Give thread a moment to start and check for immediate errors
+            import time
+            time.sleep(0.5)
+            
+            if not thread.is_alive():
+                error_msg = f"[START_STREAMING] Thread for {sensor_id} died immediately after starting!"
+                LOGGER.error(error_msg)
+                print(f"\n{'='*80}", file=sys.stderr)
+                print(error_msg, file=sys.stderr)
+                print(f"{'='*80}\n", file=sys.stderr)
+                raise RuntimeError(error_msg)
+            
+            LOGGER.info(f"Started streaming for sensor {sensor_id}")
+            
+        except Exception as e:
+            error_detail = traceback.format_exc()
+            LOGGER.error(
+                f"[START_STREAMING] FATAL ERROR creating/starting thread for {sensor_id}:\n"
+                f"Error type: {type(e).__name__}\n"
+                f"Error message: {str(e)}\n"
+                f"Full traceback:\n{error_detail}"
+            )
+            print(f"\n{'='*80}", file=sys.stderr)
+            print(f"[START_STREAMING] FATAL ERROR for {sensor_id}", file=sys.stderr)
+            print(f"{'='*80}", file=sys.stderr)
+            print(f"Error type: {type(e).__name__}", file=sys.stderr)
+            print(f"Error message: {str(e)}", file=sys.stderr)
+            print(f"\nFull traceback:", file=sys.stderr)
+            print(error_detail, file=sys.stderr)
+            print(f"{'='*80}\n", file=sys.stderr)
+            raise
     
     def stop_streaming(self, sensor_id: str) -> None:
         """Stop streaming data from a sensor."""
