@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import yaml
-import mscl  # ← AGREGAR ESTA LÍNEA
 
 from app.acquisition.mscl_client import (
     DemoMSCLClient,
@@ -50,6 +49,16 @@ def build_stays(stays_cfg: Dict) -> List[StayDefinition]:
     return stays
 
 
+def _build_demo_client(
+    stays: List[StayDefinition],
+    default_fs: float,
+) -> DemoMSCLClient:
+    stays_config = [
+        {"sensor_id": stay.sensor_id, "stay_id": stay.stay_id} for stay in stays
+    ]
+    return create_demo_client(stays_config, default_fs)
+
+
 def create_client(
     app_config: Dict,
     stays: List[StayDefinition],
@@ -57,48 +66,57 @@ def create_client(
     raw_writer: Optional[RawStreamingWriter],
 ) -> MSCLClient:
     default_fs = float(app_config.get("default_fs_hz", 256))
-    demo_mode = app_config.get("modes", {}).get("demo", True)
+    demo_mode = bool(app_config.get("modes", {}).get("demo", True))
 
     if demo_mode:
         LOGGER.info("Running in DEMO mode")
-        stays_config = [
+        return _build_demo_client(stays, default_fs)
+
+    try:
+        import mscl  # type: ignore
+    except ImportError as exc:
+        LOGGER.warning(
+            "MSCL library not available (%s); falling back to DEMO mode", exc
+        )
+        return _build_demo_client(stays, default_fs)
+
+    LOGGER.info("Connecting to real MSCL Gateway at 192.168.8.101:5000")
+
+    try:
+        from app.acquisition.real_mscl_client import RealMSCLClient
+    except ImportError as exc:
+        LOGGER.warning(
+            "RealMSCLClient dependencies missing (%s); falling back to DEMO mode",
+            exc,
+        )
+        return _build_demo_client(stays, default_fs)
+
+    try:
+        connection = mscl.Connection.TcpIp("192.168.8.101", 5000)
+        base_station = mscl.BaseStation(connection)
+
+        # Ping para verificar conexión
+        if base_station.ping():
+            LOGGER.info("Successfully connected to BaseStation")
+        else:
+            LOGGER.error("BaseStation ping failed")
+
+        sensor_configs = [
             {"sensor_id": stay.sensor_id, "stay_id": stay.stay_id} for stay in stays
         ]
-        # NOTA: DemoMSCLClient aún no tiene soporte para StreamingCoordinator
-        # Por ahora retornamos demo sin coordinator (se eliminará después)
-        return create_demo_client(stays_config, default_fs)
-    else:
-        LOGGER.info("Connecting to real MSCL Gateway at 192.168.8.101:5000")
-        try:
-            from app.acquisition.real_mscl_client import RealMSCLClient
-            
-            connection = mscl.Connection.TcpIp("192.168.8.101", 5000)
-            base_station = mscl.BaseStation(connection)
-            
-            # Ping para verificar conexión
-            if base_station.ping():
-                LOGGER.info("Successfully connected to BaseStation")
-            else:
-                LOGGER.error("BaseStation ping failed")
-            
-            # Crear configuración de sensores
-            sensor_configs = [
-                {"sensor_id": stay.sensor_id, "stay_id": stay.stay_id} 
-                for stay in stays
-            ]
-            
-            # Crear y retornar cliente real CON streaming coordinator
-            return RealMSCLClient(
-                base_station,
-                sensor_configs,
-                default_fs,
-                streaming_coordinator=streaming_coordinator,
-                raw_writer=raw_writer,
-            )
-            
-        except Exception as e:
-            LOGGER.error(f"Failed to connect to Gateway: {e}")
-            raise
+
+        return RealMSCLClient(
+            base_station,
+            sensor_configs,
+            default_fs,
+            streaming_coordinator=streaming_coordinator,
+            raw_writer=raw_writer,
+        )
+
+    except Exception as exc:
+        LOGGER.error("Failed to connect to Gateway: %s", exc)
+        LOGGER.info("Falling back to DEMO mode after connection failure")
+        return _build_demo_client(stays, default_fs)
 
 
 def parse_args() -> argparse.Namespace:
