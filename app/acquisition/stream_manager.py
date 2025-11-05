@@ -318,7 +318,13 @@ class StreamManager:
                     self.discover()
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning("Initial discovery failed: %s", exc)
-        self._accel_writer = self._create_writer("acceleration", [
+
+        # Crear diccionarios de writers por sensor (para archivos separados)
+        self._accel_writers: Dict[str, RotatingCsvWriter] = {}
+        self._tension_writers: Dict[str, RotatingCsvWriter] = {}
+
+        # Headers para archivos CSV
+        self._accel_headers = [
             "timestamp_local",
             "timestamp_utc",
             "stay_id",
@@ -327,9 +333,9 @@ class StreamManager:
             "ax_g",
             "ay_g",
             "az_g",
-            "is_valid",  # Nueva columna: True si la muestra pasó validación
-        ])
-        self._tension_writer = self._create_writer("tension", [
+            "is_valid",
+        ]
+        self._tension_headers = [
             "t_window_end_local",
             "t_window_end_utc",
             "stay_id",
@@ -344,16 +350,43 @@ class StreamManager:
             "mode",
             "k_used",
             "qa",
-        ])
+        ]
 
-    def _create_writer(self, subdir: str, headers: List[str]) -> RotatingCsvWriter:
+    def _create_writer(self, subdir: str, prefix: str, headers: List[str]) -> RotatingCsvWriter:
+        """Create a RotatingCsvWriter with custom prefix for file naming."""
         policy = RotationPolicy(
             mode=self.rotation_cfg.get("mode", "time"),
             minutes=self.rotation_cfg.get("minutes"),
             max_mb=self.rotation_cfg.get("max_mb"),
         )
         path = self.storage_base / subdir
-        return RotatingCsvWriter(path, subdir, headers, policy)
+        return RotatingCsvWriter(path, prefix, headers, policy)
+
+    def _get_or_create_accel_writer(self, sensor_id: str) -> RotatingCsvWriter:
+        """Get or create acceleration CSV writer for a specific sensor."""
+        if sensor_id not in self._accel_writers:
+            # Prefix con sensor_id para archivos separados
+            prefix = f"sensor_{sensor_id}_acceleration"
+            self._accel_writers[sensor_id] = self._create_writer(
+                "acceleration",
+                prefix,
+                self._accel_headers
+            )
+            logger.info(f"Created acceleration CSV writer for sensor {sensor_id}")
+        return self._accel_writers[sensor_id]
+
+    def _get_or_create_tension_writer(self, sensor_id: str) -> RotatingCsvWriter:
+        """Get or create tension CSV writer for a specific sensor."""
+        if sensor_id not in self._tension_writers:
+            # Prefix con sensor_id para archivos separados
+            prefix = f"sensor_{sensor_id}_tension"
+            self._tension_writers[sensor_id] = self._create_writer(
+                "tension",
+                prefix,
+                self._tension_headers
+            )
+            logger.info(f"Created tension CSV writer for sensor {sensor_id}")
+        return self._tension_writers[sensor_id]
 
     def _make_bandpass(self) -> BandpassConfig:
         bandpass_cfg = self.analysis_cfg.get("bandpass", [0.2, 10.0])
@@ -663,8 +696,9 @@ class StreamManager:
                 accel=accel_record,
             )
             
-            # Escribir a CSV
-            self._tension_writer.writerow([
+            # Escribir a CSV (archivo separado por sensor)
+            tension_writer = self._get_or_create_tension_writer(sensor_id)
+            tension_writer.writerow([
                 format_timestamp(now_local),
                 format_timestamp(now_utc),
                 stay.stay_id,
@@ -740,8 +774,10 @@ class StreamManager:
             # Solo agregar a valid_samples si pasó validación
             if is_valid:
                 valid_samples.append(accel)
-        
-        self._accel_writer.writerows(records)
+
+        # Escribir a CSV (archivo separado por sensor)
+        accel_writer = self._get_or_create_accel_writer(sensor_id)
+        accel_writer.writerows(records)
         
         # Usar solo muestras válidas para el análisis
         if len(valid_samples) == 0:
@@ -860,7 +896,9 @@ class StreamManager:
             tension.coefficient_used if tension.coefficient_used is not None else "",
             qa.flag.value,
         ]
-        self._tension_writer.writerow(tension_row)
+        # Escribir a CSV (archivo separado por sensor)
+        tension_writer = self._get_or_create_tension_writer(sensor_id)
+        tension_writer.writerow(tension_row)
 
     def connect_gateway(self, host: str, port: int) -> GatewayStatus:
         logger.info("Connecting to gateway at %s:%s", host, port)
@@ -916,38 +954,10 @@ class StreamManager:
         with self._lock:
             self.storage_base = base_dir
             self.rotation_cfg = rotation_cfg
-            self._accel_writer = self._create_writer(
-                "acceleration",
-                [
-                    "timestamp_local",
-                    "timestamp_utc",
-                    "stay_id",
-                    "sensor_id",
-                    "fs_hz",
-                    "ax_g",
-                    "ay_g",
-                    "az_g",
-                ],
-            )
-            self._tension_writer = self._create_writer(
-                "tension",
-                [
-                    "t_window_end_local",
-                    "t_window_end_utc",
-                    "stay_id",
-                    "sensor_id",
-                    "f1_hz",
-                    "T_N",
-                    "T_kN",
-                    "SNR_dB",
-                    "peak_prom",
-                    "n_samples",
-                    "fs_hz",
-                    "mode",
-                    "k_used",
-                    "qa",
-                ],
-            )
+            # Limpiar writers existentes - se recrearán on-demand con nueva config
+            self._accel_writers.clear()
+            self._tension_writers.clear()
+            logger.info("Storage config updated - CSV writers will be recreated on-demand")
 
 
 __all__ = [

@@ -144,6 +144,16 @@ def create_network_control_tab():
                                                                 id="btn-set-nodes-idle",
                                                                 color="warning",
                                                                 size="lg",
+                                                                className="w-100 mb-3",
+                                                            ),
+                                                            dbc.Button(
+                                                                [
+                                                                    html.I(className="bi bi-search me-2"),
+                                                                    "Descubrir Sensores",
+                                                                ],
+                                                                id="btn-discover-sensors",
+                                                                color="info",
+                                                                size="lg",
                                                                 className="w-100",
                                                             ),
                                                         ],

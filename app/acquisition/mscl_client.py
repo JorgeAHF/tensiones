@@ -60,6 +60,10 @@ class MSCLClient:
     def list_nodes(self) -> List[SensorInfo]:  # pragma: no cover - interface
         raise NotImplementedError
 
+    def refresh_nodes(self) -> List[SensorInfo]:  # pragma: no cover - interface
+        """Re-scan for wireless nodes and update the sensor list."""
+        raise NotImplementedError
+
     def configure_node(
         self,
         sensor_id: str,
@@ -115,6 +119,13 @@ class DemoMSCLClient(MSCLClient):
     def list_nodes(self) -> List[SensorInfo]:
         if not self._connected:
             logger.debug("Demo gateway not connected; returning empty node list")
+            return []
+        return list(self._sensors.values())
+
+    def refresh_nodes(self) -> List[SensorInfo]:
+        """Re-scan for wireless nodes (demo mode - returns existing nodes)."""
+        logger.info("Demo mode: refresh_nodes called (returning existing nodes)")
+        if not self._connected:
             return []
         return list(self._sensors.values())
 
@@ -402,6 +413,16 @@ class HttpMSCLClient(MSCLClient):
             except Exception as exc:
                 logger.debug("Skipping malformed sensor entry %s: %s", entry, exc)
         return sensors
+
+    def refresh_nodes(self) -> List[SensorInfo]:
+        """Re-scan for wireless nodes and update the sensor list."""
+        try:
+            self._perform_request("POST", "/nodes/refresh")
+            logger.info("Node refresh requested via HTTP")
+        except Exception as exc:
+            logger.warning("Failed to refresh nodes: %s", exc)
+        # Return updated list
+        return self.list_nodes()
 
     def configure_node(
         self,

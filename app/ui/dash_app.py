@@ -615,10 +615,18 @@ class DashApp:
                                                 dcc.RadioItems(
                                                     id="config-data-format",
                                                     options=[
-                                                        {"label": "Float 32-bit (precisión completa - recomendado)", "value": "float"},
-                                                        {"label": "UInt16 (menor ancho de banda)", "value": "uint16"},
+                                                        {"label": "Float 32-bit (precisión completa)", "value": "float"},
                                                     ],
                                                     value="float",
+                                                ),
+                                                dbc.Alert(
+                                                    [
+                                                        html.I(className="bi bi-info-circle me-2"),
+                                                        "El G-Link-200 solo soporta formato Float en modo SYNC. "
+                                                        "El formato UInt16 (raw) no está disponible para este hardware."
+                                                    ],
+                                                    color="info",
+                                                    className="mt-2 small",
                                                 ),
                                             ],
                                             md=12,
@@ -1825,9 +1833,9 @@ class DashApp:
                             id={"type": "network-node-format", "index": sensor_id},
                             options=[
                                 {"label": "Float (32-bit)", "value": "float"},
-                                {"label": "UInt16", "value": "uint16"},
                             ],
                             value="float",
+                            disabled=True,  # Solo Float soportado en modo SYNC
                         )),
                     ])
                     table_rows.append(row)
@@ -2053,7 +2061,51 @@ class DashApp:
             except Exception as e:
                 logger.exception("Error en set_all_nodes_to_idle")
                 return dbc.Alert(f"Error: {str(e)}", color="danger")
-        
+
+        @app.callback(
+            Output("network-control-feedback", "children"),
+            Input("btn-discover-sensors", "n_clicks"),
+            prevent_initial_call=True,
+        )
+        def discover_sensors(n_clicks):
+            """Discover wireless sensors and update the nodes list."""
+            if not n_clicks:
+                return dash.no_update
+
+            try:
+                # Call refresh_nodes on the client
+                logger.info("Manual sensor discovery requested")
+                new_sensors = self.manager.client.refresh_nodes()
+
+                # Trigger manager discovery to update internal state
+                self.manager.discover()
+
+                # Build feedback message
+                if new_sensors:
+                    sensor_list = ", ".join([s.sensor_id for s in new_sensors])
+                    feedback = dbc.Alert(
+                        [
+                            html.I(className="bi bi-check-circle-fill me-2"),
+                            html.Span(f"Descubrimiento exitoso: {len(new_sensors)} sensor(es) encontrado(s) - {sensor_list}"),
+                        ],
+                        color="success",
+                    )
+                else:
+                    feedback = dbc.Alert(
+                        [
+                            html.I(className="bi bi-info-circle-fill me-2"),
+                            html.Span("No se encontraron nuevos sensores"),
+                        ],
+                        color="info",
+                    )
+
+                logger.info(f"Sensor discovery completed: {len(new_sensors)} sensor(s) found")
+                return feedback
+
+            except Exception as e:
+                logger.exception("Error en discover_sensors")
+                return dbc.Alert(f"Error: {str(e)}", color="danger")
+
         @app.callback(
             Output("individual-node-control-panel", "children"),
             Input({"type": "btn-select-node", "index": dash.dependencies.ALL}, "n_clicks"),

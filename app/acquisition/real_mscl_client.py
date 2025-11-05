@@ -71,59 +71,102 @@ class RealMSCLClient(MSCLClient):
         self._initialize_nodes()
     
     def _initialize_nodes(self):
-        """Initialize wireless nodes."""
-        LOGGER.info("Scanning for wireless nodes...")
-        
+        """Initialize wireless nodes using auto-discovery."""
+        LOGGER.info("=" * 80)
+        LOGGER.info("AUTO-DISCOVERY: Scanning for wireless nodes...")
+        LOGGER.info("=" * 80)
+
+        discovered_nodes = []
+
+        # METHOD 1: Try auto-discovery from base station beacons
+        try:
+            LOGGER.info("Method 1: Checking for node discoveries from base station...")
+            time.sleep(2)  # Wait for nodes to announce themselves
+
+            node_discoveries = self.base_station.getNodeDiscoveries()
+            LOGGER.info(f"Found {len(node_discoveries)} node(s) via auto-discovery")
+
+            for discovery in node_discoveries:
+                try:
+                    node_address = discovery.nodeAddress()
+                    frequency = discovery.frequency()
+                    rssi = discovery.rssi()
+                    LOGGER.info(f"  - Node {node_address}: freq={frequency}, RSSI={rssi} dBm")
+                    discovered_nodes.append(node_address)
+                except Exception as disc_err:
+                    LOGGER.warning(f"Could not parse discovery: {disc_err}")
+        except Exception as e:
+            LOGGER.warning(f"Auto-discovery method failed: {e}")
+
+        # METHOD 2: Ping nodes from YAML config (fallback for known nodes)
+        LOGGER.info("Method 2: Pinging nodes from configuration file...")
         for config in self.sensor_configs:
-            sensor_id = str(config['sensor_id'])  # Convertir a string
-            stay_id = config.get('stay_id', f'sensor_{sensor_id}')
-            
+            sensor_id_int = int(config['sensor_id'])
+            if sensor_id_int not in discovered_nodes:
+                LOGGER.info(f"  Trying to ping configured node {sensor_id_int}...")
+                discovered_nodes.append(sensor_id_int)
+
+        # METHOD 3: Optional - scan common node ID ranges (commented out for speed)
+        # Uncomment if you want to scan for unknown nodes
+        # LOGGER.info("Method 3: Scanning common node ID ranges...")
+        # for node_id in range(10000, 20000, 1000):  # Scan every 1000th ID
+        #     if node_id not in discovered_nodes:
+        #         discovered_nodes.append(node_id)
+
+        # Now try to connect to all discovered nodes
+        LOGGER.info(f"\nAttempting to connect to {len(discovered_nodes)} discovered node(s)...")
+
+        for node_id_int in discovered_nodes:
+            sensor_id = str(node_id_int)
+
+            # Check if node is in config, otherwise use default stay_id
+            config_entry = next((c for c in self.sensor_configs if int(c['sensor_id']) == node_id_int), None)
+            stay_id = config_entry.get('stay_id', f'sensor_{sensor_id}') if config_entry else f'sensor_{sensor_id}'
+
             try:
-                LOGGER.info(f"Attempting to connect to node {sensor_id}...")
-                node_id_int = int(sensor_id)
+                LOGGER.info(f"\n--- Connecting to Node {sensor_id} ---")
                 node = mscl.WirelessNode(node_id_int, self.base_station)
-                
-                # Wait a moment for node to be ready
+
+                # Wait for node to be ready
                 time.sleep(0.5)
-                
+
                 # Ping node with retries
                 ping_success = False
                 for attempt in range(3):
                     try:
                         LOGGER.info(f"Ping attempt {attempt + 1}/3 for node {sensor_id}...")
                         ping_response = node.ping()
-                        # Ping completed without exception = success
                         rssi_base = ping_response.baseRssi()
                         rssi_node = ping_response.nodeRssi()
-                        LOGGER.info(f"Node {sensor_id} connected (RSSI Base: {rssi_base}, Node: {rssi_node})")
+                        LOGGER.info(f"✅ Node {sensor_id} connected! (RSSI Base: {rssi_base}, Node: {rssi_node})")
                         self.nodes[sensor_id] = node
                         ping_success = True
                         break
                     except Exception as ping_error:
-                        LOGGER.warning(f"Ping attempt {attempt + 1} failed for node {sensor_id}: {ping_error}")
+                        LOGGER.warning(f"Ping attempt {attempt + 1} failed: {ping_error}")
                         if attempt < 2:
-                            LOGGER.info(f"Retrying in 1 second...")
                             time.sleep(1)
-                
+
                 if ping_success:
-                    # CRÍTICO: Configurar el nodo para muestreo continuo ANTES de usarlo
+                    # Get node model and info
                     try:
-                        LOGGER.info(f"Configuring node {sensor_id} for unlimited duration sampling...")
-                        
-                        # Obtener configuración del nodo
+                        model = node.model()
+                        LOGGER.info(f"Node {sensor_id} model: {model}")
+                    except:
+                        LOGGER.info(f"Node {sensor_id} model: Unknown")
+
+                    # Configure for unlimited duration sampling
+                    try:
+                        LOGGER.info(f"Configuring node {sensor_id} for continuous sampling...")
                         config = node.getConfig()
-                        
-                        # Configurar para duración ilimitada (no se detiene automáticamente)
                         config.unlimitedDuration(True)
-                        
-                        # Aplicar configuración
                         node.applyConfig(config)
-                        LOGGER.info(f"Node {sensor_id} configured for continuous unlimited sampling!")
-                    except AttributeError as attr_err:
-                        LOGGER.warning(f"Node API does not support unlimitedDuration: {attr_err}")
+                        LOGGER.info(f"✅ Node {sensor_id} configured for continuous sampling")
+                    except AttributeError:
+                        LOGGER.warning(f"Node {sensor_id} API does not support unlimitedDuration")
                     except Exception as config_err:
-                        LOGGER.warning(f"Could not configure node {sensor_id} for unlimited duration: {config_err}")
-                    
+                        LOGGER.warning(f"Could not configure node {sensor_id}: {config_err}")
+
                     # Create SensorInfo
                     sensor_info = SensorInfo(
                         sensor_id=sensor_id,
@@ -133,13 +176,49 @@ class RealMSCLClient(MSCLClient):
                         battery_percent=None
                     )
                     self._sensors[sensor_id] = sensor_info
-                    LOGGER.info(f"Registered sensor {sensor_id} ({stay_id})")
+                    LOGGER.info(f"✅ Registered sensor {sensor_id} ({stay_id})")
                 else:
-                    LOGGER.error(f"Node {sensor_id} ping failed")
+                    LOGGER.error(f"❌ Node {sensor_id} ping failed after 3 attempts")
             except Exception as e:
-                LOGGER.error(f"Failed to initialize node {sensor_id}: {e}")
-    
-    
+                LOGGER.error(f"❌ Failed to initialize node {sensor_id}: {e}")
+
+        LOGGER.info("=" * 80)
+        LOGGER.info(f"AUTO-DISCOVERY COMPLETE: {len(self._sensors)} node(s) registered")
+        LOGGER.info(f"Nodes: {list(self._sensors.keys())}")
+        LOGGER.info("=" * 80)
+
+    def refresh_nodes(self) -> List[SensorInfo]:
+        """Re-scan for wireless nodes and update the sensor list.
+
+        This allows discovering new nodes without restarting the application.
+
+        Returns:
+            List of newly discovered sensors
+        """
+        LOGGER.info("\n" + "=" * 80)
+        LOGGER.info("REFRESH: Re-scanning for wireless nodes...")
+        LOGGER.info("=" * 80)
+
+        # Store current sensors to detect new ones
+        previous_sensors = set(self._sensors.keys())
+
+        # Re-run node discovery
+        self._initialize_nodes()
+
+        # Find new sensors
+        current_sensors = set(self._sensors.keys())
+        new_sensors = current_sensors - previous_sensors
+
+        if new_sensors:
+            LOGGER.info(f"✅ Discovered {len(new_sensors)} NEW sensor(s): {list(new_sensors)}")
+        else:
+            LOGGER.info("No new sensors discovered")
+
+        LOGGER.info("=" * 80)
+
+        # Return list of all current sensors
+        return list(self._sensors.values())
+
     def connect_gateway(self, host: str, port: int) -> GatewayStatus:
         """Connect to gateway (already connected in __init__)."""
         return self._gateway_status
@@ -246,9 +325,16 @@ class RealMSCLClient(MSCLClient):
             LOGGER.info(f"Enabled channels: {axes}")
             
             # PASO 5: Formato de datos
+            # IMPORTANTE: G-Link-200 en modo SYNC solo soporta datos calibrados (float)
+            # El formato raw (uint16) NO está soportado en modo SYNC
             if data_format == "uint16":
-                node_config.dataFormat(mscl.WirelessTypes.dataFormat_raw_uint16)
-                LOGGER.info("Data format: uint16 (raw)")
+                LOGGER.error(
+                    "⚠️  HARDWARE LIMITATION: G-Link-200 does NOT support uint16 (raw) format in SYNC mode. "
+                    "Only calibrated float data is supported. Forcing float format."
+                )
+                # Forzar float para evitar error de configuración
+                node_config.dataFormat(mscl.WirelessTypes.dataFormat_cal_float)
+                LOGGER.info("Data format: float (calibrated) - forced due to hardware limitation")
             else:
                 node_config.dataFormat(mscl.WirelessTypes.dataFormat_cal_float)
                 LOGGER.info("Data format: float (calibrated)")
