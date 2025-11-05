@@ -544,6 +544,10 @@ class RealMSCLClient(MSCLClient):
                     node.applyConfig(node_config)
                     LOGGER.info(f"Node {node.nodeAddress()} configured: SYNC mode, {sample_rate_hz}Hz, unlimited duration")
                     
+                    # DEBUG: Confirmar que vamos a verificar
+                    print(f"\n🔧 Aplicando configuración al nodo {node.nodeAddress()}...", file=sys.stderr)
+                    print(f"   Frecuencia solicitada: {sample_rate_hz} Hz", file=sys.stderr)
+                    
                     # PASO 4: VERIFICAR configuración aplicada y ACTUALIZAR frecuencia real
                     try:
                         actual_rate = node.getSampleRate()
