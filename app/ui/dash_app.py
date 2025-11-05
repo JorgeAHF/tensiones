@@ -518,10 +518,7 @@ class DashApp:
                                                 dcc.Dropdown(
                                                     id="config-sample-rate-new",
                                                     options=[
-                                                        {"label": "32 Hz", "value": 32},
-                                                        {"label": "64 Hz", "value": 64},
-                                                        {"label": "128 Hz", "value": 128},
-                                                        {"label": "256 Hz (Default)", "value": 256},
+                                                        {"label": "256 Hz (Mínimo soportado)", "value": 256},
                                                         {"label": "512 Hz", "value": 512},
                                                         {"label": "1024 Hz (1 kHz)", "value": 1024},
                                                         {"label": "2048 Hz (2 kHz)", "value": 2048},
