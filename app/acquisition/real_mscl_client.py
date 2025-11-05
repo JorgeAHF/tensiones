@@ -406,17 +406,20 @@ class RealMSCLClient(MSCLClient):
                     if current_time - last_freq_report > 10.0:
                         measured_freq = freq_detector.get_frequency()
                         if measured_freq:
+                            # Conversión defensiva: asegurar que sample_rate_hz sea float
+                            configured_rate = float(info.sample_rate_hz)
+                            
                             LOGGER.info(
                                 f"[FREQ CHECK] Sensor {sensor_id} - "
-                                f"Configured: {info.sample_rate_hz} Hz, "
+                                f"Configured: {configured_rate} Hz, "
                                 f"Measured: {measured_freq:.2f} Hz"
                             )
                             
                             # Advertencia si hay discrepancia > 10%
-                            if abs(measured_freq - info.sample_rate_hz) > info.sample_rate_hz * 0.1:
+                            if abs(measured_freq - configured_rate) > configured_rate * 0.1:
                                 LOGGER.warning(
                                     f"[FREQ MISMATCH] Sensor {sensor_id} frequency mismatch > 10%! "
-                                    f"Expected: {info.sample_rate_hz} Hz, Got: {measured_freq:.2f} Hz"
+                                    f"Expected: {configured_rate} Hz, Got: {measured_freq:.2f} Hz"
                                 )
                         
                         last_freq_report = current_time
