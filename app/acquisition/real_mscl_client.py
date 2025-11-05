@@ -376,6 +376,22 @@ class RealMSCLClient(MSCLClient):
                         if batches_sent <= 10:
                             LOGGER.info(f"Batch #{batches_sent}: {len(accumulated_samples)} samples, shape {acc_data.shape}")
                         
+                        # VERIFICACIÓN: Después del 5to batch, mostrar frecuencia almacenada vs medida
+                        if batches_sent == 5:
+                            import sys
+                            print("\n" + "="*80, file=sys.stderr)
+                            print(f"📊 VERIFICACIÓN DE FRECUENCIA - Sensor {sensor_id}", file=sys.stderr)
+                            print("="*80, file=sys.stderr)
+                            print(f"   Frecuencia en info.sample_rate_hz: {info.sample_rate_hz} Hz", file=sys.stderr)
+                            print(f"   Tamaño de batch (1 segundo de datos): {batch_threshold} samples", file=sys.stderr)
+                            print(f"   Samples por batch REAL: {len(accumulated_samples)} samples", file=sys.stderr)
+                            if len(accumulated_samples) != batch_threshold:
+                                print(f"   ⚠️  DISCREPANCIA DETECTADA!", file=sys.stderr)
+                                print(f"   La frecuencia REAL podría ser ~{len(accumulated_samples)} Hz", file=sys.stderr)
+                            else:
+                                print(f"   ✅ Frecuencia coincide con configuración", file=sys.stderr)
+                            print("="*80 + "\n", file=sys.stderr)
+                        
                         # NUEVO: Enviar datos al StreamingCoordinator (desacoplado)
                         if self.streaming_coordinator:
                             # Calcular timestamps individuales para cada muestra
