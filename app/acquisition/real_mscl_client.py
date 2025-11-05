@@ -13,6 +13,33 @@ from app.sinks.raw_writer import RawStreamingWriter
 LOGGER = logging.getLogger(__name__)
 
 
+class FrequencyDetector:
+    """Helper class para detectar la frecuencia REAL de muestreo."""
+    
+    def __init__(self, window_size: int = 1000):
+        self.timestamps = []
+        self.window_size = window_size
+        self.measured_freq = None
+    
+    def add_sample(self, timestamp: float):
+        """Agrega un timestamp y calcula frecuencia."""
+        self.timestamps.append(timestamp)
+        
+        # Mantener solo los últimos N timestamps
+        if len(self.timestamps) > self.window_size:
+            self.timestamps.pop(0)
+        
+        # Calcular frecuencia si tenemos suficientes muestras
+        if len(self.timestamps) >= 100:
+            time_diff = self.timestamps[-1] - self.timestamps[0]
+            if time_diff > 0:
+                self.measured_freq = (len(self.timestamps) - 1) / time_diff
+    
+    def get_frequency(self) -> Optional[float]:
+        """Retorna la frecuencia medida, o None si no hay suficientes datos."""
+        return self.measured_freq
+
+
 class RealMSCLClient(MSCLClient):
     """Wrapper for real MSCL BaseStation and WirelessNodes."""
     
@@ -135,7 +162,7 @@ class RealMSCLClient(MSCLClient):
         return list(self._sensors.values())
     
     def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str], data_format: str = "float") -> None:
-        """Configure node sampling parameters."""
+        """Configure node sampling parameters using WirelessNodeConfig."""
         if sensor_id not in self._sensors:
             raise KeyError(f"Unknown sensor {sensor_id}")
         
@@ -143,37 +170,81 @@ class RealMSCLClient(MSCLClient):
         sample_rate_hz = float(sample_rate_hz)
         
         info = self._sensors[sensor_id]
-        info.sample_rate_hz = sample_rate_hz
         info.axes = list(axes)
         
-        # Reconfigurar StreamingCoordinator con nueva frecuencia de muestreo
-        if self.streaming_coordinator:
-            self.streaming_coordinator.reconfigure_sensor(sensor_id, int(sample_rate_hz))
-            LOGGER.info(f"StreamingCoordinator reconfigured for {sensor_id} @ {sample_rate_hz}Hz")
-        
-        # Configurar formato de datos
         node = self.nodes.get(sensor_id)
-        if node:
-            try:
-                node_config = mscl.WirelessNodeConfig()
-                
-                # Formato de datos
-                if data_format == "uint16":
-                    node_config.dataFormat(mscl.WirelessTypes.dataFormat_raw_uint16)
-                    LOGGER.info(f"Data format configured: uint16 (raw)")
-                else:  # float por defecto
-                    node_config.dataFormat(mscl.WirelessTypes.dataFormat_cal_float)
-                    LOGGER.info(f"Data format configured: float (calibrated)")
-                
-                # Aplicar configuración
-                node.applyConfig(node_config)
-                
-            except AttributeError as e:
-                LOGGER.warning(f"Could not set data format (API limitation): {e}")
-            except Exception as e:
-                LOGGER.error(f"Error configuring data format: {e}")
+        if not node:
+            LOGGER.error(f"Node {sensor_id} not found in nodes dictionary")
+            return
         
-        LOGGER.info(f"Configured sensor {sensor_id}: fs={sample_rate_hz}Hz, axes={axes}, format={data_format}")
+        try:
+            # CRÍTICO: Usar WirelessNodeConfig en lugar de métodos individuales
+            LOGGER.info(f"Creating WirelessNodeConfig for sensor {sensor_id}")
+            node_config = mscl.WirelessNodeConfig()
+            
+            # PASO 1: Configurar modo de muestreo sincronizado
+            node_config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
+            LOGGER.info("Set sampling mode: SYNC")
+            
+            # PASO 2: Convertir Hz a enum de MSCL
+            rate_enum = self._hz_to_sample_rate_enum(sample_rate_hz)
+            node_config.sampleRate(rate_enum)
+            LOGGER.info(f"Set sample rate: {sample_rate_hz} Hz (enum: {rate_enum})")
+            
+            # PASO 3: Duración ilimitada
+            node_config.unlimitedDuration(True)
+            LOGGER.info("Set unlimited duration: True")
+            
+            # PASO 4: Habilitar canales (X, Y, Z)
+            channels = mscl.ChannelMask()
+            if 'x' in [a.lower() for a in axes]:
+                channels.enable(mscl.WirelessChannel.channel_1)  # X
+            if 'y' in [a.lower() for a in axes]:
+                channels.enable(mscl.WirelessChannel.channel_2)  # Y
+            if 'z' in [a.lower() for a in axes]:
+                channels.enable(mscl.WirelessChannel.channel_3)  # Z
+            node_config.activeChannels(channels)
+            LOGGER.info(f"Enabled channels: {axes}")
+            
+            # PASO 5: Formato de datos
+            if data_format == "uint16":
+                node_config.dataFormat(mscl.WirelessTypes.dataFormat_raw_uint16)
+                LOGGER.info("Data format: uint16 (raw)")
+            else:
+                node_config.dataFormat(mscl.WirelessTypes.dataFormat_cal_float)
+                LOGGER.info("Data format: float (calibrated)")
+            
+            # PASO 6: APLICAR LA CONFIGURACIÓN (CRÍTICO)
+            LOGGER.info(f"Applying configuration to node {sensor_id}...")
+            node.applyConfig(node_config)
+            LOGGER.info(f"Configuration applied successfully to node {sensor_id}")
+            
+            # PASO 7: Verificar configuración aplicada
+            actual_rate_enum = node.getSampleRate()
+            actual_rate_hz = self._sample_rate_enum_to_hz(actual_rate_enum)
+            LOGGER.info(f"Verification - Configured rate: {sample_rate_hz} Hz, Actual rate enum: {actual_rate_enum}, Actual rate Hz: {actual_rate_hz} Hz")
+            
+            # PASO 8: Actualizar info del sensor con frecuencia verificada
+            info.sample_rate_hz = actual_rate_hz  # Usar la frecuencia verificada
+            
+            # Advertencia si no coinciden
+            if abs(actual_rate_hz - sample_rate_hz) > 1:
+                LOGGER.warning(
+                    f"Frequency mismatch for {sensor_id}! "
+                    f"Requested: {sample_rate_hz} Hz, Got: {actual_rate_hz} Hz"
+                )
+            
+            # PASO 9: Reconfigurar StreamingCoordinator con frecuencia real
+            if self.streaming_coordinator:
+                self.streaming_coordinator.reconfigure_sensor(sensor_id, int(actual_rate_hz))
+                LOGGER.info(f"StreamingCoordinator reconfigured for {sensor_id} @ {actual_rate_hz}Hz")
+            
+        except mscl.Error as e:
+            LOGGER.error(f"MSCL Error configuring node {sensor_id}: {e}")
+            raise
+        except Exception as e:
+            LOGGER.error(f"Unexpected error configuring node {sensor_id}: {e}")
+            raise
     
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:
         """Start streaming data from a sensor."""
@@ -275,6 +346,10 @@ class RealMSCLClient(MSCLClient):
         
         info = self._sensors[sensor_id]
         
+        # NUEVO: Detector de frecuencia real
+        freq_detector = FrequencyDetector(window_size=1000)
+        last_freq_report = time.time()
+        
         try:
             # Try to configure and start the node with multiple strategies
             LOGGER.info(f"Initializing sampling for node {sensor_id}...")
@@ -322,6 +397,29 @@ class RealMSCLClient(MSCLClient):
                         continue
                     
                     samples_received += 1
+                    
+                    # NUEVO: Registrar timestamp para detector de frecuencia
+                    current_time = time.time()
+                    freq_detector.add_sample(current_time)
+                    
+                    # Reportar frecuencia medida cada 10 segundos
+                    if current_time - last_freq_report > 10.0:
+                        measured_freq = freq_detector.get_frequency()
+                        if measured_freq:
+                            LOGGER.info(
+                                f"[FREQ CHECK] Sensor {sensor_id} - "
+                                f"Configured: {info.sample_rate_hz} Hz, "
+                                f"Measured: {measured_freq:.2f} Hz"
+                            )
+                            
+                            # Advertencia si hay discrepancia > 10%
+                            if abs(measured_freq - info.sample_rate_hz) > info.sample_rate_hz * 0.1:
+                                LOGGER.warning(
+                                    f"[FREQ MISMATCH] Sensor {sensor_id} frequency mismatch > 10%! "
+                                    f"Expected: {info.sample_rate_hz} Hz, Got: {measured_freq:.2f} Hz"
+                                )
+                        
+                        last_freq_report = current_time
                     
                     # Extract data from sweep
                     timestamp = sweep.timestamp().seconds()  # Get seconds since epoch
@@ -697,4 +795,72 @@ class RealMSCLClient(MSCLClient):
         # Strategy 4: Check if network is already running from external source
         LOGGER.info("Checking if SyncSamplingNetwork is already active from external source (e.g., SensorConnect)...")
         LOGGER.info("Application will attempt to read data from existing sampling session")
+    
+    def _hz_to_sample_rate_enum(self, hz: float) -> 'mscl.WirelessTypes.WirelessSampleRate':
+        """
+        Convierte frecuencia en Hz a enum de MSCL.
+        
+        G-Link-200 soporta estas frecuencias en modo SYNC:
+        32, 64, 128, 256, 512, 1024, 2048, 4096 Hz
+        """
+        # Mapeo de Hz a enums de MSCL
+        rate_map = {
+            32: mscl.WirelessTypes.sampleRate_32Hz,
+            64: mscl.WirelessTypes.sampleRate_64Hz,
+            128: mscl.WirelessTypes.sampleRate_128Hz,
+            256: mscl.WirelessTypes.sampleRate_256Hz,
+            512: mscl.WirelessTypes.sampleRate_512Hz,
+            1024: mscl.WirelessTypes.sampleRate_1024Hz,
+            2048: mscl.WirelessTypes.sampleRate_2048Hz,
+            4096: mscl.WirelessTypes.sampleRate_4096Hz,
+        }
+        
+        hz_int = int(hz)
+        if hz_int not in rate_map:
+            supported = list(rate_map.keys())
+            LOGGER.warning(
+                f"Unsupported sample rate: {hz} Hz. "
+                f"Supported rates for G-Link-200: {supported}. "
+                f"Using closest: 256 Hz"
+            )
+            # Encontrar la frecuencia más cercana
+            hz_int = min(supported, key=lambda x: abs(x - hz))
+        
+        return rate_map[hz_int]
+    
+    def _sample_rate_enum_to_hz(self, rate_enum: 'mscl.WirelessTypes.WirelessSampleRate') -> float:
+        """
+        Convierte enum de MSCL a frecuencia en Hz.
+        
+        IMPORTANTE: getSampleRate() retorna un enum, NO Hz directamente.
+        """
+        # Mapeo inverso de enums a Hz
+        enum_map = {
+            mscl.WirelessTypes.sampleRate_32Hz: 32.0,
+            mscl.WirelessTypes.sampleRate_64Hz: 64.0,
+            mscl.WirelessTypes.sampleRate_128Hz: 128.0,
+            mscl.WirelessTypes.sampleRate_256Hz: 256.0,
+            mscl.WirelessTypes.sampleRate_512Hz: 512.0,
+            mscl.WirelessTypes.sampleRate_1024Hz: 1024.0,
+            mscl.WirelessTypes.sampleRate_2048Hz: 2048.0,
+            mscl.WirelessTypes.sampleRate_4096Hz: 4096.0,
+        }
+        
+        if rate_enum in enum_map:
+            return enum_map[rate_enum]
+        else:
+            # Si no está en el mapa, intentar convertir directamente
+            # (algunos enums pueden tener método samples_per_second())
+            try:
+                if hasattr(rate_enum, 'samples_per_second'):
+                    return float(rate_enum.samples_per_second())
+            except:
+                pass
+            
+            LOGGER.warning(f"Unknown sample rate enum: {rate_enum}, defaulting to 256 Hz")
+            return 256.0
+    
+    def get_supported_sample_rates(self) -> List[float]:
+        """Retorna lista de frecuencias soportadas por G-Link-200 en modo SYNC."""
+        return [32.0, 64.0, 128.0, 256.0, 512.0, 1024.0, 2048.0, 4096.0]
         # Don't raise - let it try to read data anyway
