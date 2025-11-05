@@ -161,39 +161,78 @@ class RealMSCLClient(MSCLClient):
         """Return list of SensorInfo objects."""
         return list(self._sensors.values())
     
-    def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str], data_format: str = "float") -> None:
-        """Configure node sampling parameters using WirelessNodeConfig."""
+    def configure_node(
+        self,
+        sensor_id: str,
+        sample_rate_hz: float,
+        axes: Iterable[str],
+        data_format: str = "float",
+        sampling_mode: str = "continuous",
+        duration_seconds: Optional[int] = None,
+    ) -> None:
+        """Configure node sampling parameters using WirelessNodeConfig.
+
+        Args:
+            sensor_id: ID del sensor a configurar
+            sample_rate_hz: Frecuencia de muestreo en Hz (>= 32 Hz recomendado)
+            axes: Lista de ejes activos ('x', 'y', 'z')
+            data_format: Formato de datos ('float' o 'uint16')
+            sampling_mode: Modo de muestreo ('continuous', 'duration', 'burst', 'event')
+            duration_seconds: Duración en segundos (solo para modo 'duration')
+        """
         if sensor_id not in self._sensors:
             raise KeyError(f"Unknown sensor {sensor_id}")
-        
+
         # Asegurar que sample_rate_hz sea float PRIMERO (puede venir como string desde UI)
         sample_rate_hz = float(sample_rate_hz)
-        
+
         info = self._sensors[sensor_id]
         info.axes = list(axes)
-        
+
         node = self.nodes.get(sensor_id)
         if not node:
             LOGGER.error(f"Node {sensor_id} not found in nodes dictionary")
             return
-        
+
         try:
             # CRÍTICO: Usar WirelessNodeConfig en lugar de métodos individuales
             LOGGER.info(f"Creating WirelessNodeConfig for sensor {sensor_id}")
             node_config = mscl.WirelessNodeConfig()
-            
+
             # PASO 1: Configurar modo de muestreo sincronizado
             node_config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
             LOGGER.info("Set sampling mode: SYNC")
-            
+
             # PASO 2: Convertir Hz a enum de MSCL
             rate_enum = self._hz_to_sample_rate_enum(sample_rate_hz)
             node_config.sampleRate(rate_enum)
             LOGGER.info(f"Set sample rate: {sample_rate_hz} Hz (enum: {rate_enum})")
-            
-            # PASO 3: Duración ilimitada
-            node_config.unlimitedDuration(True)
-            LOGGER.info("Set unlimited duration: True")
+
+            # PASO 3: Configurar duración según el modo
+            if sampling_mode == "continuous":
+                node_config.unlimitedDuration(True)
+                LOGGER.info("Set sampling mode: CONTINUOUS (unlimited duration)")
+            elif sampling_mode == "duration" and duration_seconds:
+                node_config.unlimitedDuration(False)
+                # Configurar duración en segundos
+                # NOTA: La API de MSCL usa "dataCollectionMethod" con tiempo en segundos
+                try:
+                    # Convertir segundos a milisegundos si es necesario
+                    node_config.timeBetweenBursts(mscl.TimeSpan.Seconds(duration_seconds))
+                    LOGGER.info(f"Set sampling mode: DURATION ({duration_seconds} seconds)")
+                except AttributeError:
+                    LOGGER.warning(f"Could not set duration, using unlimited instead")
+                    node_config.unlimitedDuration(True)
+            elif sampling_mode == "burst":
+                LOGGER.warning("Burst mode not fully implemented yet - using continuous mode")
+                node_config.unlimitedDuration(True)
+            elif sampling_mode == "event":
+                LOGGER.warning("Event-driven mode not fully implemented yet - using continuous mode")
+                node_config.unlimitedDuration(True)
+            else:
+                # Default: continuous
+                node_config.unlimitedDuration(True)
+                LOGGER.info("Set unlimited duration: True (default)")
             
             # PASO 4: Habilitar canales (X, Y, Z)
             channels = mscl.ChannelMask()
@@ -427,15 +466,20 @@ class RealMSCLClient(MSCLClient):
                     # Extract data from sweep
                     timestamp = sweep.timestamp().seconds()  # Get seconds since epoch
                     data = sweep.data()
-                    
+
                     if len(data) == 0:
                         continue
-                    
+
                     # In Sync Sampling mode, data comes as interleaved channels
                     # For 3-axis accel: [X0, Y0, Z0, X1, Y1, Z1, ...]
+                    # For 1-axis: [Z0, Z1, Z2, ...]
                     # Each sweep may contain multiple samples
-                    
-                    num_channels = 3  # X, Y, Z
+
+                    # CRÍTICO: Calcular número de canales dinámicamente basándose en configuración
+                    num_channels = len(info.axes)  # Usar ejes configurados
+                    if num_channels == 0:
+                        num_channels = 3  # Fallback por seguridad
+
                     num_samples = len(data) // num_channels
                     
                     if samples_received % 100 == 1:  # Log every 100th sweep
@@ -448,22 +492,38 @@ class RealMSCLClient(MSCLClient):
                     # Parse all samples in this sweep
                     for i in range(num_samples):
                         try:
-                            # Get X, Y, Z for this sample
+                            # Parsear canales dinámicamente según configuración
                             idx_base = i * num_channels
-                            x = data[idx_base].as_float()
-                            y = data[idx_base + 1].as_float()
-                            z = data[idx_base + 2].as_float()
-                            accumulated_samples.append([x, y, z])
-                        except:
+                            channel_values = []
+
+                            # Intentar primero como float
                             try:
-                                # Try as double
-                                x = data[idx_base].as_double()
-                                y = data[idx_base + 1].as_double()
-                                z = data[idx_base + 2].as_double()
-                                accumulated_samples.append([x, y, z])
-                            except Exception as parse_err:
-                                LOGGER.warning(f"Could not parse sample {i}: {parse_err}")
-                                continue
+                                for ch in range(num_channels):
+                                    channel_values.append(data[idx_base + ch].as_float())
+                            except:
+                                # Intentar como double
+                                channel_values = []
+                                for ch in range(num_channels):
+                                    channel_values.append(data[idx_base + ch].as_double())
+
+                            # Construir array [x, y, z] basándose en ejes configurados
+                            # Siempre crear 3 valores para compatibilidad con el resto del código
+                            x, y, z = 0.0, 0.0, 0.0
+                            axes_lower = [a.lower() for a in info.axes]
+
+                            for idx, axis in enumerate(axes_lower):
+                                if axis == 'x':
+                                    x = channel_values[idx]
+                                elif axis == 'y':
+                                    y = channel_values[idx]
+                                elif axis == 'z':
+                                    z = channel_values[idx]
+
+                            accumulated_samples.append([x, y, z])
+
+                        except Exception as parse_err:
+                            LOGGER.warning(f"Could not parse sample {i}: {parse_err}")
+                            continue
                     
                     # Send accumulated samples in batches (every ~1 second worth of data)
                     # Dynamically adjust batch size based on sample rate
@@ -573,105 +633,68 @@ class RealMSCLClient(MSCLClient):
             #     LOGGER.warning(f"Failed to stop node {sensor_id}: {e}")
     
     def _configure_and_start_node(self, node: mscl.WirelessNode, sample_rate_hz: float) -> None:
-        """Configure and start sampling using SyncSamplingNetwork with multiple retry strategies."""
+        """Start sampling using SyncSamplingNetwork (configuration already applied in configure_node).
+
+        IMPORTANTE: Este método NO debe reconfigurar el nodo. La configuración ya se aplicó
+        en configure_node() y debe respetarse. Este método solo agrega el nodo a la red
+        de sincronización e inicia el sampling.
+        """
         import traceback
         import sys
-        
+
         try:
             # Strategy 1: Try with existing SyncSamplingNetwork (if already created)
             if self._sync_network is None:
                 LOGGER.info("Creating SyncSamplingNetwork...")
                 self._sync_network = mscl.SyncSamplingNetwork(self.base_station)
-            
+
             if not self._sync_network_started:
                 LOGGER.info(f"Adding node {node.nodeAddress()} to sync network...")
-                
+
                 # Give the node time to be ready
                 time.sleep(1.0)
-                
+
                 # PASO 1: DETENER CUALQUIER SESIÓN DE MUESTREO EXISTENTE
                 try:
                     LOGGER.info(f"Stopping any existing sampling session on node {node.nodeAddress()}...")
                     idle_status = node.setToIdle()
-                    
+
                     # Esperar a que complete
                     timeout_counter = 0
                     while not idle_status.complete() and timeout_counter < 50:  # 5 segundos max
                         time.sleep(0.1)
                         timeout_counter += 1
-                    
+
                     if idle_status.result() == mscl.SetToIdleStatus.setToIdleResult_success:
-                        LOGGER.info("Node successfully set to IDLE - ready for new configuration")
+                        LOGGER.info("Node successfully set to IDLE - ready for starting sampling")
                     else:
                         LOGGER.warning(f"setToIdle result: {idle_status.result()}")
-                        LOGGER.info("Proceeding with configuration anyway...")
-                        
+                        LOGGER.info("Proceeding anyway...")
+
                 except Exception as idle_err:
                     LOGGER.warning(f"Could not set node to idle: {idle_err}")
-                    LOGGER.info("Node may already be idle, proceeding with configuration...")
-                
-                # PASO 2: CONFIGURAR EL NODO (ahora que está en IDLE)
+                    LOGGER.info("Node may already be idle, proceeding...")
+
+                # PASO 2: NO RECONFIGURAR - La configuración ya se aplicó en configure_node()
+                # Solo verificamos que el nodo tiene la configuración correcta
                 try:
-                    LOGGER.info(f"Configuring node {node.nodeAddress()} for continuous sync sampling...")
-                    
-                    # Crear nueva configuración
-                    node_config = mscl.WirelessNodeConfig()
-                    
-                    # CRÍTICO: Modo de muestreo sincronizado
-                    node_config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
-                    LOGGER.info("Set sampling mode: SYNC")
-                    
-                    # Configurar frecuencia de muestreo dinámicamente (todas las frecuencias soportadas por G-Link-200)
-                    sample_rate_map = {
-                        1: mscl.WirelessTypes.sampleRate_1Hz,
-                        2: mscl.WirelessTypes.sampleRate_2Hz,
-                        4: mscl.WirelessTypes.sampleRate_4Hz,
-                        8: mscl.WirelessTypes.sampleRate_8Hz,
-                        16: mscl.WirelessTypes.sampleRate_16Hz,
-                        32: mscl.WirelessTypes.sampleRate_32Hz,
-                        64: mscl.WirelessTypes.sampleRate_64Hz,
-                        128: mscl.WirelessTypes.sampleRate_128Hz,
-                        256: mscl.WirelessTypes.sampleRate_256Hz,
-                        512: mscl.WirelessTypes.sampleRate_512Hz,
-                        1024: mscl.WirelessTypes.sampleRate_1024Hz,
-                        2048: mscl.WirelessTypes.sampleRate_2048Hz,
-                        4096: mscl.WirelessTypes.sampleRate_4096Hz,
-                    }
-                    
-                    if sample_rate_hz in sample_rate_map:
-                        node_config.sampleRate(sample_rate_map[sample_rate_hz])
-                        LOGGER.info(f"Set sample rate: {sample_rate_hz}Hz")
-                    else:
-                        LOGGER.warning(f"Unsupported sample rate {sample_rate_hz}Hz, using 256Hz")
-                        node_config.sampleRate(mscl.WirelessTypes.sampleRate_256Hz)
-                    
-                    # CRÍTICO: Habilitar duración ilimitada
-                    node_config.unlimitedDuration(True)
-                    LOGGER.info(f"Set unlimitedDuration=True for continuous sampling")
-                    
-                    # Habilitar canales del acelerómetro (X, Y, Z)
-                    channels = mscl.ChannelMask()
-                    channels.enable(mscl.WirelessChannel.channel_1)  # X
-                    channels.enable(mscl.WirelessChannel.channel_2)  # Y
-                    channels.enable(mscl.WirelessChannel.channel_3)  # Z
-                    node_config.activeChannels(channels)
-                    LOGGER.info("Enabled accelerometer channels: X, Y, Z")
-                    
-                    # PASO 3: APLICAR configuración al nodo
-                    node.applyConfig(node_config)
-                    LOGGER.info(f"Node {node.nodeAddress()} configured: SYNC mode, {sample_rate_hz}Hz, unlimited duration")
-                    
-                    # NOTA: La verificación de frecuencia ahora se hace SOLO en configure_node()
-                    # para evitar sobrescribir con conversiones enum incorrectas.
-                    # El método configure_node() ya verificó y actualizó la frecuencia real.
-                    LOGGER.info(f"Configuration will be verified in configure_node() method")
-                    
-                except AttributeError as attr_err:
-                    LOGGER.warning(f"Node configuration API not available: {attr_err}")
-                    LOGGER.info("Will proceed without explicit configuration")
-                except Exception as config_err:
-                    LOGGER.error(f"Failed to configure node: {config_err}")
-                    LOGGER.info("Will attempt to start with default/existing configuration")
+                    actual_rate_enum = node.getSampleRate()
+                    actual_rate_hz = self._sample_rate_enum_to_hz(actual_rate_enum)
+                    LOGGER.info(
+                        f"Node {node.nodeAddress()} current configuration: "
+                        f"{actual_rate_hz}Hz (requested: {sample_rate_hz}Hz)"
+                    )
+
+                    if abs(actual_rate_hz - sample_rate_hz) > 1:
+                        LOGGER.warning(
+                            f"⚠️  Configuration mismatch detected! "
+                            f"Node has {actual_rate_hz}Hz but {sample_rate_hz}Hz was requested. "
+                            f"This may indicate a hardware limitation or configuration issue."
+                        )
+
+                except Exception as verify_err:
+                    LOGGER.warning(f"Could not verify node configuration: {verify_err}")
+                    LOGGER.info("Will proceed with starting sampling anyway...")
                 
                 # PASO 5: AGREGAR el nodo a la red de sincronización
                 self._sync_network.addNode(node)
@@ -731,11 +754,20 @@ class RealMSCLClient(MSCLClient):
     def _hz_to_sample_rate_enum(self, hz: float) -> 'mscl.WirelessTypes.WirelessSampleRate':
         """
         Convierte frecuencia en Hz a enum de MSCL.
-        
+
         G-Link-200 soporta estas frecuencias en modo SYNC:
         32, 64, 128, 256, 512, 1024, 2048, 4096 Hz
+
+        IMPORTANTE: Según la documentación de LORD MicroStrain:
+        - Frecuencias >= 32 Hz están completamente soportadas en modo SYNC
+        - Frecuencias < 32 Hz pueden tener problemas de transferencia de datos con 3 canales
+        - El hardware puede NO respetar frecuencias < 32 Hz y usar 256 Hz por defecto
+
+        Referencias:
+        - LORD MicroStrain User Manual: "data transfer considerations become relevant
+          when using 3 channels on G-Link-200 with a sample rate 32Hz and less"
         """
-        # Mapeo de Hz a enums de MSCL
+        # Mapeo de Hz a enums de MSCL (solo frecuencias >= 32 Hz)
         rate_map = {
             32: mscl.WirelessTypes.sampleRate_32Hz,
             64: mscl.WirelessTypes.sampleRate_64Hz,
@@ -746,18 +778,31 @@ class RealMSCLClient(MSCLClient):
             2048: mscl.WirelessTypes.sampleRate_2048Hz,
             4096: mscl.WirelessTypes.sampleRate_4096Hz,
         }
-        
+
         hz_int = int(hz)
+
+        # Validación: Advertir sobre frecuencias no soportadas
+        if hz_int < 32:
+            LOGGER.error(
+                f"⚠️  HARDWARE LIMITATION: Sample rate {hz} Hz is below 32 Hz. "
+                f"G-Link-200 may NOT support frequencies < 32 Hz in SYNC mode with 3 channels. "
+                f"The hardware will likely default to 256 Hz. "
+                f"Consider using >= 32 Hz for reliable operation."
+            )
+            # Usar 256 Hz como fallback seguro
+            return mscl.WirelessTypes.sampleRate_256Hz
+
         if hz_int not in rate_map:
             supported = list(rate_map.keys())
             LOGGER.warning(
                 f"Unsupported sample rate: {hz} Hz. "
-                f"Supported rates for G-Link-200: {supported}. "
-                f"Using closest: 256 Hz"
+                f"Supported rates for G-Link-200 in SYNC mode: {supported}. "
+                f"Using closest supported rate..."
             )
             # Encontrar la frecuencia más cercana
             hz_int = min(supported, key=lambda x: abs(x - hz))
-        
+            LOGGER.info(f"Selected closest rate: {hz_int} Hz")
+
         return rate_map[hz_int]
     
     def _sample_rate_enum_to_hz(self, rate_enum: 'mscl.WirelessTypes.WirelessSampleRate') -> float:
@@ -793,6 +838,10 @@ class RealMSCLClient(MSCLClient):
             return 256.0
     
     def get_supported_sample_rates(self) -> List[float]:
-        """Retorna lista de frecuencias soportadas por G-Link-200 en modo SYNC."""
+        """Retorna lista de frecuencias soportadas por G-Link-200 en modo SYNC.
+
+        NOTA: Solo se incluyen frecuencias >= 32 Hz debido a limitaciones de hardware
+        documentadas por LORD MicroStrain. Frecuencias menores pueden no ser respetadas
+        por el dispositivo en modo SYNC con 3 canales activos.
+        """
         return [32.0, 64.0, 128.0, 256.0, 512.0, 1024.0, 2048.0, 4096.0]
-        # Don't raise - let it try to read data anyway

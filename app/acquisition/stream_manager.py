@@ -408,11 +408,36 @@ class StreamManager:
             states.append(state)
         return states
 
-    def configure(self, sensor_id: str, sample_rate: float, axes: Iterable[str], data_format: str = "float") -> None:
+    def configure(
+        self,
+        sensor_id: str,
+        sample_rate: float,
+        axes: Iterable[str],
+        data_format: str = "float",
+        sampling_mode: str = "continuous",
+        duration_seconds: Optional[int] = None,
+    ) -> None:
+        """Configure sensor sampling parameters.
+
+        Args:
+            sensor_id: ID del sensor
+            sample_rate: Frecuencia de muestreo en Hz
+            axes: Lista de ejes activos
+            data_format: Formato de datos ('float' o 'uint16')
+            sampling_mode: Modo de sampling ('continuous', 'duration', 'burst', 'event')
+            duration_seconds: Duración en segundos (solo para modo 'duration')
+        """
         if not self._gateway_status.connected:
             logger.warning("Cannot configure sensor %s without gateway connection", sensor_id)
             return
-        self.client.configure_node(sensor_id, sample_rate, axes, data_format)
+        self.client.configure_node(
+            sensor_id,
+            sample_rate,
+            axes,
+            data_format,
+            sampling_mode=sampling_mode,
+            duration_seconds=duration_seconds,
+        )
         stay = self.stays.get(sensor_id)
         if stay is None:
             return
@@ -430,7 +455,7 @@ class StreamManager:
         self.mode.setdefault(sensor_id, "AUTO")
         self.guided_f1.setdefault(sensor_id, None)
         self.guided_tol.setdefault(sensor_id, 0.1)
-        
+
         # Reconfigurar RealtimeDataStore con nueva frecuencia
         if self.realtime_store:
             self.realtime_store.reconfigure_sensor(sensor_id, int(sample_rate))
