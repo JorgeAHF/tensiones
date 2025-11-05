@@ -732,13 +732,16 @@ class StreamManager:
             return
         magnitude = np.linalg.norm(samples, axis=1)
 
+        # Conversión defensiva: asegurar que fs_hz sea float
+        fs_hz = float(sample.fs_hz) if isinstance(sample.fs_hz, str) else sample.fs_hz
+        
         estimator = self.estimators[sensor_id]
-        estimator.update_fs(sample.fs_hz)
+        estimator.update_fs(fs_hz)
         bp = self._make_bandpass()
         try:
             processed = preprocess(
                 magnitude,
-                sample.fs_hz,
+                fs_hz,
                 bp,
             )
         except ValueError:
