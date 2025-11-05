@@ -567,10 +567,28 @@ class RealMSCLClient(MSCLClient):
                         }
                         
                         actual_rate_hz = rate_to_hz.get(actual_rate.value(), sample_rate_hz)
+                        sensor_id = str(node.nodeAddress())
+                        
+                        # LOG MUY VISIBLE - SIEMPRE mostrar
+                        print("\n" + "="*80, file=sys.stderr)
+                        print(f"🔍 DETECCIÓN DE FRECUENCIA - Sensor {sensor_id}", file=sys.stderr)
+                        print("="*80, file=sys.stderr)
+                        print(f"   Solicitada: {sample_rate_hz} Hz", file=sys.stderr)
+                        print(f"   Hardware responde: {actual_rate_hz} Hz", file=sys.stderr)
+                        print(f"   Match: {'✅ SÍ' if actual_rate_hz == sample_rate_hz else '❌ NO'}", file=sys.stderr)
+                        print("="*80 + "\n", file=sys.stderr)
+                        
+                        # También escribir a archivo para revisión posterior
+                        try:
+                            with open("data/logs/frequency_check.log", "a") as f:
+                                from datetime import datetime
+                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                f.write(f"{timestamp} | Sensor {sensor_id} | Requested: {sample_rate_hz}Hz | Hardware: {actual_rate_hz}Hz\n")
+                        except:
+                            pass
                         
                         # CRÍTICO: Actualizar con la frecuencia REAL del hardware
                         if actual_rate_hz != sample_rate_hz:
-                            sensor_id = str(node.nodeAddress())
                             LOGGER.warning(
                                 f"Sample rate mismatch! Requested: {sample_rate_hz}Hz, "
                                 f"Hardware using: {actual_rate_hz}Hz. Updating sensor {sensor_id} to actual rate."
@@ -579,11 +597,14 @@ class RealMSCLClient(MSCLClient):
                             # Actualizar info del sensor con frecuencia real
                             if sensor_id in self._sensors:
                                 self._sensors[sensor_id].sample_rate_hz = float(actual_rate_hz)
+                                LOGGER.info(f"Updated info.sample_rate_hz to {actual_rate_hz}Hz")
                             
                             # Actualizar StreamingCoordinator con la frecuencia real
                             if self.streaming_coordinator:
                                 self.streaming_coordinator.reconfigure_sensor(sensor_id, actual_rate_hz)
                                 LOGGER.info(f"StreamingCoordinator updated to {actual_rate_hz}Hz for {sensor_id}")
+                        else:
+                            LOGGER.info(f"✅ Sample rate match: {actual_rate_hz}Hz (requested and actual are identical)")
                         
                         LOGGER.info(f"Verified config - Rate: {actual_rate_hz}Hz, Unlimited: {actual_unlimited}")
                     except Exception as verify_err:
