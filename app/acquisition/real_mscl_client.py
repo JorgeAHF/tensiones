@@ -658,81 +658,10 @@ class RealMSCLClient(MSCLClient):
                     node.applyConfig(node_config)
                     LOGGER.info(f"Node {node.nodeAddress()} configured: SYNC mode, {sample_rate_hz}Hz, unlimited duration")
                     
-                    # DEBUG: Confirmar que vamos a verificar
-                    print(f"\n🔧 Aplicando configuración al nodo {node.nodeAddress()}...", file=sys.stderr)
-                    print(f"   Frecuencia solicitada: {sample_rate_hz} Hz", file=sys.stderr)
-                    
-                    # PASO 4: VERIFICAR configuración aplicada y ACTUALIZAR frecuencia real
-                    try:
-                        actual_rate = node.getSampleRate()
-                        actual_unlimited = node.getUnlimitedDuration()
-                        
-                        # Mapa inverso para convertir SampleRate enum a Hz
-                        rate_to_hz = {
-                            mscl.WirelessTypes.sampleRate_1Hz: 1,
-                            mscl.WirelessTypes.sampleRate_2Hz: 2,
-                            mscl.WirelessTypes.sampleRate_4Hz: 4,
-                            mscl.WirelessTypes.sampleRate_8Hz: 8,
-                            mscl.WirelessTypes.sampleRate_16Hz: 16,
-                            mscl.WirelessTypes.sampleRate_32Hz: 32,
-                            mscl.WirelessTypes.sampleRate_64Hz: 64,
-                            mscl.WirelessTypes.sampleRate_128Hz: 128,
-                            mscl.WirelessTypes.sampleRate_256Hz: 256,
-                            mscl.WirelessTypes.sampleRate_512Hz: 512,
-                            mscl.WirelessTypes.sampleRate_1024Hz: 1024,
-                            mscl.WirelessTypes.sampleRate_2048Hz: 2048,
-                            mscl.WirelessTypes.sampleRate_4096Hz: 4096,
-                        }
-                        
-                        # actual_rate puede ser int directo o enum - manejar ambos casos
-                        if isinstance(actual_rate, int):
-                            # Si es int directo, buscar en el diccionario por valor
-                            actual_rate_hz = actual_rate
-                        else:
-                            # Si es enum, usar .value()
-                            actual_rate_hz = rate_to_hz.get(actual_rate.value(), sample_rate_hz)
-                        sensor_id = str(node.nodeAddress())
-                        
-                        # LOG MUY VISIBLE - SIEMPRE mostrar
-                        print("\n" + "="*80, file=sys.stderr)
-                        print(f"🔍 DETECCIÓN DE FRECUENCIA - Sensor {sensor_id}", file=sys.stderr)
-                        print("="*80, file=sys.stderr)
-                        print(f"   Solicitada: {sample_rate_hz} Hz", file=sys.stderr)
-                        print(f"   Hardware responde: {actual_rate_hz} Hz", file=sys.stderr)
-                        print(f"   Match: {'✅ SÍ' if actual_rate_hz == sample_rate_hz else '❌ NO'}", file=sys.stderr)
-                        print("="*80 + "\n", file=sys.stderr)
-                        
-                        # También escribir a archivo para revisión posterior
-                        try:
-                            with open("data/logs/frequency_check.log", "a") as f:
-                                from datetime import datetime
-                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                f.write(f"{timestamp} | Sensor {sensor_id} | Requested: {sample_rate_hz}Hz | Hardware: {actual_rate_hz}Hz\n")
-                        except:
-                            pass
-                        
-                        # CRÍTICO: Actualizar con la frecuencia REAL del hardware
-                        if actual_rate_hz != sample_rate_hz:
-                            LOGGER.warning(
-                                f"Sample rate mismatch! Requested: {sample_rate_hz}Hz, "
-                                f"Hardware using: {actual_rate_hz}Hz. Updating sensor {sensor_id} to actual rate."
-                            )
-                            
-                            # Actualizar info del sensor con frecuencia real
-                            if sensor_id in self._sensors:
-                                self._sensors[sensor_id].sample_rate_hz = float(actual_rate_hz)
-                                LOGGER.info(f"Updated info.sample_rate_hz to {actual_rate_hz}Hz")
-                            
-                            # Actualizar StreamingCoordinator con la frecuencia real
-                            if self.streaming_coordinator:
-                                self.streaming_coordinator.reconfigure_sensor(sensor_id, actual_rate_hz)
-                                LOGGER.info(f"StreamingCoordinator updated to {actual_rate_hz}Hz for {sensor_id}")
-                        else:
-                            LOGGER.info(f"✅ Sample rate match: {actual_rate_hz}Hz (requested and actual are identical)")
-                        
-                        LOGGER.info(f"Verified config - Rate: {actual_rate_hz}Hz, Unlimited: {actual_unlimited}")
-                    except Exception as verify_err:
-                        LOGGER.warning(f"Could not verify configuration: {verify_err}")
+                    # NOTA: La verificación de frecuencia ahora se hace SOLO en configure_node()
+                    # para evitar sobrescribir con conversiones enum incorrectas.
+                    # El método configure_node() ya verificó y actualizó la frecuencia real.
+                    LOGGER.info(f"Configuration will be verified in configure_node() method")
                     
                 except AttributeError as attr_err:
                     LOGGER.warning(f"Node configuration API not available: {attr_err}")
