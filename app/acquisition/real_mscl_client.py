@@ -570,7 +570,13 @@ class RealMSCLClient(MSCLClient):
                             mscl.WirelessTypes.sampleRate_4096Hz: 4096,
                         }
                         
-                        actual_rate_hz = rate_to_hz.get(actual_rate.value(), sample_rate_hz)
+                        # actual_rate puede ser int directo o enum - manejar ambos casos
+                        if isinstance(actual_rate, int):
+                            # Si es int directo, buscar en el diccionario por valor
+                            actual_rate_hz = actual_rate
+                        else:
+                            # Si es enum, usar .value()
+                            actual_rate_hz = rate_to_hz.get(actual_rate.value(), sample_rate_hz)
                         sensor_id = str(node.nodeAddress())
                         
                         # LOG MUY VISIBLE - SIEMPRE mostrar
