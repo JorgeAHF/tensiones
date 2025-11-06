@@ -734,77 +734,88 @@ class RealMSCLClient(MSCLClient):
                 LOGGER.info("Creating SyncSamplingNetwork...")
                 self._sync_network = mscl.SyncSamplingNetwork(self.base_station)
 
-            if not self._sync_network_started:
-                LOGGER.info(f"Adding node {node.nodeAddress()} to sync network...")
+            LOGGER.info(f"Adding node {node.nodeAddress()} to sync network...")
 
-                # Give the node time to be ready
-                time.sleep(1.0)
+            # Give the node time to be ready
+            time.sleep(1.0)
 
-                # PASO 1: DETENER CUALQUIER SESIÓN DE MUESTREO EXISTENTE
-                try:
-                    LOGGER.info(f"Stopping any existing sampling session on node {node.nodeAddress()}...")
-                    idle_status = node.setToIdle()
+            # PASO 1: DETENER CUALQUIER SESIÓN DE MUESTREO EXISTENTE
+            try:
+                LOGGER.info(f"Stopping any existing sampling session on node {node.nodeAddress()}...")
+                idle_status = node.setToIdle()
 
-                    # Esperar a que complete
-                    timeout_counter = 0
-                    while not idle_status.complete() and timeout_counter < 50:  # 5 segundos max
-                        time.sleep(0.1)
-                        timeout_counter += 1
+                # Esperar a que complete
+                timeout_counter = 0
+                while not idle_status.complete() and timeout_counter < 50:  # 5 segundos max
+                    time.sleep(0.1)
+                    timeout_counter += 1
 
-                    if idle_status.result() == mscl.SetToIdleStatus.setToIdleResult_success:
-                        LOGGER.info("Node successfully set to IDLE - ready for starting sampling")
-                    else:
-                        LOGGER.warning(f"setToIdle result: {idle_status.result()}")
-                        LOGGER.info("Proceeding anyway...")
+                if idle_status.result() == mscl.SetToIdleStatus.setToIdleResult_success:
+                    LOGGER.info("Node successfully set to IDLE - ready for starting sampling")
+                else:
+                    LOGGER.warning(f"setToIdle result: {idle_status.result()}")
+                    LOGGER.info("Proceeding anyway...")
 
-                except Exception as idle_err:
-                    LOGGER.warning(f"Could not set node to idle: {idle_err}")
-                    LOGGER.info("Node may already be idle, proceeding...")
+            except Exception as idle_err:
+                LOGGER.warning(f"Could not set node to idle: {idle_err}")
+                LOGGER.info("Node may already be idle, proceeding...")
 
-                # PASO 2: NO RECONFIGURAR - La configuración ya se aplicó en configure_node()
-                # Solo verificamos que el nodo tiene la configuración correcta
-                try:
-                    actual_rate_enum = node.getSampleRate()
-                    actual_rate_hz = self._sample_rate_enum_to_hz(actual_rate_enum)
-                    LOGGER.info(
-                        f"Node {node.nodeAddress()} current configuration: "
-                        f"{actual_rate_hz}Hz (requested: {sample_rate_hz}Hz)"
+            # PASO 2: NO RECONFIGURAR - La configuración ya se aplicó en configure_node()
+            # Solo verificamos que el nodo tiene la configuración correcta
+            try:
+                actual_rate_enum = node.getSampleRate()
+                actual_rate_hz = self._sample_rate_enum_to_hz(actual_rate_enum)
+                LOGGER.info(
+                    f"Node {node.nodeAddress()} current configuration: "
+                    f"{actual_rate_hz}Hz (requested: {sample_rate_hz}Hz)"
+                )
+
+                if abs(actual_rate_hz - sample_rate_hz) > 1:
+                    LOGGER.warning(
+                        f"⚠️  Configuration mismatch detected! "
+                        f"Node has {actual_rate_hz}Hz but {sample_rate_hz}Hz was requested. "
+                        f"This may indicate a hardware limitation or configuration issue."
                     )
 
-                    if abs(actual_rate_hz - sample_rate_hz) > 1:
-                        LOGGER.warning(
-                            f"⚠️  Configuration mismatch detected! "
-                            f"Node has {actual_rate_hz}Hz but {sample_rate_hz}Hz was requested. "
-                            f"This may indicate a hardware limitation or configuration issue."
-                        )
+            except Exception as verify_err:
+                LOGGER.warning(f"Could not verify node configuration: {verify_err}")
+                LOGGER.info("Will proceed with starting sampling anyway...")
 
-                except Exception as verify_err:
-                    LOGGER.warning(f"Could not verify node configuration: {verify_err}")
-                    LOGGER.info("Will proceed with starting sampling anyway...")
-                
-                # PASO 5: AGREGAR el nodo a la red de sincronización
-                self._sync_network.addNode(node)
-                LOGGER.info(f"Node {node.nodeAddress()} added to sync network")
-                
-                # PASO 6: CONFIGURAR modo lossless
+            # Si la red ya está corriendo, debemos detenerla para agregar el nuevo nodo
+            if self._sync_network_started:
+                LOGGER.info("Sync network is already running - stopping to add new node...")
                 try:
-                    LOGGER.info("Configuring lossless mode...")
-                    self._sync_network.lossless(True)
-                    LOGGER.info("Lossless mode enabled!")
-                except Exception as lossless_err:
-                    LOGGER.warning(f"Could not enable lossless mode: {lossless_err}")
-                
-                # PASO 7: APLICAR configuración de la red
-                LOGGER.info("Applying sync network configuration...")
-                self._sync_network.applyConfiguration()
-                LOGGER.info("Sync network configuration applied")
-                
-                # PASO 8: INICIAR muestreo
-                LOGGER.info("Starting sync sampling network...")
-                self._sync_network.startSampling()
-                self._sync_network_started = True
-                LOGGER.info(f"SUCCESS: Sync sampling network started - continuous @ {sample_rate_hz}Hz!")
-                return  # Success!
+                    self._sync_network.stopSampling()
+                    LOGGER.info("Sync network stopped successfully")
+                    self._sync_network_started = False
+                except Exception as stop_err:
+                    LOGGER.warning(f"Could not stop sync network cleanly: {stop_err}")
+                    LOGGER.info("Will try to add node anyway...")
+
+            # PASO 5: AGREGAR el nodo a la red de sincronización
+            self._sync_network.addNode(node)
+            LOGGER.info(f"Node {node.nodeAddress()} added to sync network")
+
+            # PASO 6: CONFIGURAR modo lossless
+            try:
+                LOGGER.info("Configuring lossless mode...")
+                self._sync_network.lossless(True)
+                LOGGER.info("Lossless mode enabled!")
+            except Exception as lossless_err:
+                LOGGER.warning(f"Could not enable lossless mode: {lossless_err}")
+
+            # PASO 7: APLICAR configuración de la red
+            LOGGER.info("Applying sync network configuration...")
+            self._sync_network.applyConfiguration()
+            LOGGER.info("Sync network configuration applied")
+
+            # PASO 8: INICIAR/REINICIAR muestreo
+            LOGGER.info("Starting sync sampling network...")
+            self._sync_network.startSampling()
+            self._sync_network_started = True
+            LOGGER.info(f"SUCCESS: Sync sampling network (re)started - continuous @ {sample_rate_hz}Hz!")
+
+            return  # Success!
                 
         except Exception as e:
             LOGGER.error(f"Failed to configure/start sync network: {e}")
