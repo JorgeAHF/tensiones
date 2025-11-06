@@ -561,6 +561,11 @@ class StreamManager:
         if state:
             state.streaming = False
 
+        # Limpiar writers del sensor para forzar creación de nuevos archivos en próximo start
+        self._accel_writers.pop(sensor_id, None)
+        self._tension_writers.pop(sensor_id, None)
+        logger.info(f"CSV writers cleared for sensor {sensor_id} - new files will be created on next start")
+
     def start_all(self) -> None:
         for sensor_id in self.stays:
             self.start(sensor_id)
