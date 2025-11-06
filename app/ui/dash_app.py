@@ -1716,19 +1716,21 @@ class DashApp:
         
         @app.callback(
             Output("detected-nodes-list", "children"),
+            Output("individual-node-control-panel", "children"),
             Input("node-detection-interval", "n_intervals"),
         )
         def update_detected_nodes_list(n):
-            """Actualiza la lista de nodos detectados cada 5 segundos."""
+            """Actualiza la lista de nodos detectados y sus controles individuales cada 5 segundos."""
             logger.info(f"[CONTROL-RED] Actualizando lista de nodos (intervalo #{n})")
             logger.info(f"[CONTROL-RED] Sensores disponibles: {list(self.manager.sensors.keys())}")
             nodes_cards = []
-            
+            control_panels = []
+
             for sensor_id, state in self.manager.sensors.items():
                 # Determinar estado
                 is_streaming = state.streaming
                 last_sample_time = getattr(state, '_last_sample_time', None)
-                
+
                 if is_streaming:
                     if last_sample_time and (time.time() - last_sample_time) > 15:
                         status_badge = dbc.Badge("DESCONECTADO", color="danger", className="me-2")
@@ -1739,8 +1741,8 @@ class DashApp:
                 else:
                     status_badge = dbc.Badge("IDLE", color="secondary", className="me-2")
                     connection_msg = html.Small("Listo", className="text-muted")
-                
-                # Crear tarjeta del nodo
+
+                # Crear tarjeta del nodo (lista de la izquierda)
                 card = dbc.Card(
                     [
                         dbc.CardBody(
@@ -1762,29 +1764,99 @@ class DashApp:
                                 html.P([
                                     html.Strong("Ejes: "),
                                     ", ".join([a.upper() for a in state.info.axes]) if state.info.axes else "---",
-                                ], className="mb-2 small"),
-                                dbc.Button(
-                                    "CONTROLAR",
-                                    id={"type": "btn-select-node", "index": sensor_id},
-                                    color="dark",
-                                    size="sm",
-                                    className="w-100",
-                                ),
+                                ], className="mb-0 small"),
                             ]
                         ),
                     ],
                     className="mb-3",
                 )
                 nodes_cards.append(card)
-            
+
+                # Crear panel de control individual (panel de la derecha)
+                control_panel = dbc.Card(
+                    [
+                        dbc.CardHeader(
+                            html.H5(f"CONTROL INDIVIDUAL - NODO {sensor_id}", className="mb-0")
+                        ),
+                        dbc.CardBody(
+                            [
+                                dbc.Row(
+                                    [
+                                        dbc.Col(
+                                            [
+                                                html.P([
+                                                    html.Strong("Stay: "),
+                                                    state.info.stay_id,
+                                                ]),
+                                                html.P([
+                                                    html.Strong("Estado: "),
+                                                    dbc.Badge(
+                                                        "ACTIVO" if is_streaming else "IDLE",
+                                                        color="success" if is_streaming else "secondary",
+                                                    ),
+                                                ]),
+                                                html.P([
+                                                    html.Strong("Frecuencia: "),
+                                                    f"{state.info.sample_rate_hz} Hz" if state.info.sample_rate_hz else "No configurado",
+                                                ]),
+                                                html.P([
+                                                    html.Strong("Ejes: "),
+                                                    ", ".join([a.upper() for a in state.info.axes]) if state.info.axes else "---",
+                                                ]),
+                                            ],
+                                            md=6,
+                                        ),
+                                        dbc.Col(
+                                            [
+                                                html.H6("ACCIONES:", className="mb-3"),
+                                                dbc.ButtonGroup(
+                                                    [
+                                                        dbc.Button(
+                                                            [html.I(className="bi bi-play-fill me-1"), "SAMPLE"],
+                                                            id={"type": "btn-node-sample", "index": sensor_id},
+                                                            color="primary",
+                                                            disabled=is_streaming,
+                                                        ),
+                                                        dbc.Button(
+                                                            [html.I(className="bi bi-pause-fill me-1"), "SET TO IDLE"],
+                                                            id={"type": "btn-node-idle", "index": sensor_id},
+                                                            color="warning",
+                                                            disabled=not is_streaming,
+                                                        ),
+                                                        dbc.Button(
+                                                            [html.I(className="bi bi-power me-1"), "SLEEP"],
+                                                            id={"type": "btn-node-sleep", "index": sensor_id},
+                                                            color="secondary",
+                                                        ),
+                                                    ],
+                                                    className="w-100",
+                                                    vertical=False,
+                                                ),
+                                                html.Div(
+                                                    id={"type": "individual-node-feedback", "index": sensor_id},
+                                                    className="mt-3",
+                                                ),
+                                            ],
+                                            md=6,
+                                        ),
+                                    ],
+                                ),
+                            ]
+                        ),
+                    ],
+                    className="shadow-sm mb-3",
+                )
+                control_panels.append(control_panel)
+
             logger.info(f"[CONTROL-RED] Total de tarjetas de nodos creadas: {len(nodes_cards)}")
-            
+            logger.info(f"[CONTROL-RED] Total de paneles de control creados: {len(control_panels)}")
+
             if not nodes_cards:
                 logger.warning("[CONTROL-RED] No se detectaron nodos")
-                return dbc.Alert("No se detectaron nodos. Esperando...", color="info")
-            
+                return dbc.Alert("No se detectaron nodos. Esperando...", color="info"), []
+
             logger.info(f"[CONTROL-RED] Retornando {len(nodes_cards)} nodos detectados")
-            return nodes_cards
+            return nodes_cards, control_panels
 
         @app.callback(
             Output("sampling-network-modal", "is_open"),
@@ -2132,118 +2204,9 @@ class DashApp:
                 logger.exception("Error en discover_sensors")
                 return dbc.Alert(f"Error: {str(e)}", color="danger")
 
-        @app.callback(
-            Output("individual-node-control-panel", "children"),
-            Input({"type": "btn-select-node", "index": dash.dependencies.ALL}, "n_clicks"),
-            State({"type": "btn-select-node", "index": dash.dependencies.ALL}, "id"),
-            prevent_initial_call=True,
-        )
-        def show_individual_node_controls(n_clicks_list, button_ids):
-            """Muestra controles individuales para el nodo seleccionado."""
-            logger.info(f"[CONTROL-INDIVIDUAL] Callback disparado - n_clicks: {n_clicks_list}, buttons: {button_ids}")
-            ctx = callback_context
-            if not ctx.triggered:
-                logger.warning("[CONTROL-INDIVIDUAL] No hay trigger")
-                return dash.no_update
-            
-            # Identificar qué botón se presionó
-            trigger_id = ctx.triggered[0]["prop_id"]
-            logger.info(f"[CONTROL-INDIVIDUAL] Trigger ID: {trigger_id}")
-            
-            # Extraer sensor_id del trigger
-            import json
-            try:
-                trigger_dict = json.loads(trigger_id.split(".")[0])
-                sensor_id = trigger_dict["index"]
-                logger.info(f"[CONTROL-INDIVIDUAL] Sensor seleccionado: {sensor_id}")
-            except Exception as e:
-                logger.error(f"[CONTROL-INDIVIDUAL] Error parseando trigger: {e}")
-                return dash.no_update
-            
-            # Obtener información del nodo
-            state = self.manager.sensors.get(sensor_id)
-            if not state:
-                return dbc.Alert(f"Nodo {sensor_id} no encontrado", color="danger")
-            
-            is_streaming = state.streaming
-            
-            # Crear panel de control individual
-            panel = dbc.Card(
-                [
-                    dbc.CardHeader(
-                        html.H5(f"Control Individual - Nodo {sensor_id}", className="mb-0")
-                    ),
-                    dbc.CardBody(
-                        [
-                            dbc.Row(
-                                [
-                                    dbc.Col(
-                                        [
-                                            html.P([
-                                                html.Strong("Stay: "),
-                                                state.info.stay_id,
-                                            ]),
-                                            html.P([
-                                                html.Strong("Estado: "),
-                                                dbc.Badge(
-                                                    "ACTIVO" if is_streaming else "IDLE",
-                                                    color="success" if is_streaming else "secondary",
-                                                ),
-                                            ]),
-                                            html.P([
-                                                html.Strong("Frecuencia: "),
-                                                f"{state.info.sample_rate_hz} Hz" if state.info.sample_rate_hz else "No configurado",
-                                            ]),
-                                            html.P([
-                                                html.Strong("Ejes: "),
-                                                ", ".join([a.upper() for a in state.info.axes]) if state.info.axes else "---",
-                                            ]),
-                                        ],
-                                        md=6,
-                                    ),
-                                    dbc.Col(
-                                        [
-                                            html.H6("Acciones:", className="mb-3"),
-                                            dbc.ButtonGroup(
-                                                [
-                                                    dbc.Button(
-                                                        [html.I(className="bi bi-play-fill me-1"), "Sample"],
-                                                        id={"type": "btn-node-sample", "index": sensor_id},
-                                                        color="primary",
-                                                        disabled=is_streaming,
-                                                    ),
-                                                    dbc.Button(
-                                                        [html.I(className="bi bi-pause-fill me-1"), "Set to Idle"],
-                                                        id={"type": "btn-node-idle", "index": sensor_id},
-                                                        color="warning",
-                                                        disabled=not is_streaming,
-                                                    ),
-                                                    dbc.Button(
-                                                        [html.I(className="bi bi-power me-1"), "Sleep"],
-                                                        id={"type": "btn-node-sleep", "index": sensor_id},
-                                                        color="secondary",
-                                                    ),
-                                                ],
-                                                className="w-100",
-                                                vertical=False,
-                                            ),
-                                            html.Div(
-                                                id={"type": "individual-node-feedback", "index": sensor_id},
-                                                className="mt-3",
-                                            ),
-                                        ],
-                                        md=6,
-                                    ),
-                                ],
-                            ),
-                        ]
-                    ),
-                ],
-                className="shadow-sm",
-            )
-            
-            return panel
-        
+        # Callback eliminado: show_individual_node_controls
+        # Los controles individuales ahora se generan automáticamente en update_detected_nodes_list
+
         @app.callback(
             Output({"type": "individual-node-feedback", "index": dash.dependencies.MATCH}, "children"),
             Input({"type": "btn-node-sample", "index": dash.dependencies.MATCH}, "n_clicks"),
