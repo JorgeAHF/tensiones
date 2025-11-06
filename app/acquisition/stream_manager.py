@@ -72,6 +72,7 @@ class StayDefinition:
 class SensorState:
     info: SensorInfo
     streaming: bool = False
+    sleeping: bool = False  # True when node is in sleep mode
     last_sample_timestamp: Optional[float] = None
     estimated_fs: Optional[float] = None
     battery_percent: Optional[float] = None

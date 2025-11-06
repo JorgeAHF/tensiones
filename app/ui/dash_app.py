@@ -1729,9 +1729,13 @@ class DashApp:
             for sensor_id, state in self.manager.sensors.items():
                 # Determinar estado
                 is_streaming = state.streaming
+                is_sleeping = state.sleeping
                 last_sample_time = getattr(state, '_last_sample_time', None)
 
-                if is_streaming:
+                if is_sleeping:
+                    status_badge = dbc.Badge("SLEEP", color="dark", className="me-2")
+                    connection_msg = html.Small("Modo bajo consumo", className="text-muted")
+                elif is_streaming:
                     if last_sample_time and (time.time() - last_sample_time) > 15:
                         status_badge = dbc.Badge("DESCONECTADO", color="danger", className="me-2")
                         connection_msg = html.Small(f"Sin datos por {int(time.time() - last_sample_time)}s", className="text-danger")
@@ -1791,8 +1795,8 @@ class DashApp:
                                                 html.P([
                                                     html.Strong("Estado: "),
                                                     dbc.Badge(
-                                                        "ACTIVO" if is_streaming else "IDLE",
-                                                        color="success" if is_streaming else "secondary",
+                                                        "SLEEP" if is_sleeping else ("ACTIVO" if is_streaming else "IDLE"),
+                                                        color="dark" if is_sleeping else ("success" if is_streaming else "secondary"),
                                                     ),
                                                 ]),
                                                 html.P([
@@ -1815,18 +1819,19 @@ class DashApp:
                                                             [html.I(className="bi bi-play-fill me-1"), "SAMPLE"],
                                                             id={"type": "btn-node-sample", "index": sensor_id},
                                                             color="primary",
-                                                            disabled=is_streaming,
+                                                            disabled=is_streaming or is_sleeping,
                                                         ),
                                                         dbc.Button(
-                                                            [html.I(className="bi bi-pause-fill me-1"), "SET TO IDLE"],
+                                                            [html.I(className="bi bi-pause-fill me-1"), "SET TO IDLE" if not is_sleeping else "WAKE UP"],
                                                             id={"type": "btn-node-idle", "index": sensor_id},
-                                                            color="warning",
-                                                            disabled=not is_streaming,
+                                                            color="warning" if not is_sleeping else "success",
+                                                            disabled=not (is_streaming or is_sleeping),
                                                         ),
                                                         dbc.Button(
                                                             [html.I(className="bi bi-power me-1"), "SLEEP"],
                                                             id={"type": "btn-node-sleep", "index": sensor_id},
                                                             color="secondary",
+                                                            disabled=is_sleeping,
                                                         ),
                                                     ],
                                                     className="w-100",
@@ -2132,12 +2137,17 @@ class DashApp:
                         try:
                             logger.info(f"Poniendo nodo {sensor_id} en IDLE...")
                             idle_status = node.setToIdle()
-                            
+
                             # Esperar confirmación (máx 5 segundos)
                             for _ in range(50):
                                 if idle_status.complete():
                                     idle_results.append((sensor_id, True))
                                     logger.info(f"Nodo {sensor_id} en IDLE")
+
+                                    # Limpiar estado sleeping si estaba dormido
+                                    if sensor_id in self.manager.sensors:
+                                        self.manager.sensors[sensor_id].sleeping = False
+
                                     break
                                 time.sleep(0.1)
                             else:
@@ -2146,7 +2156,7 @@ class DashApp:
                         except Exception as e:
                             idle_results.append((sensor_id, False))
                             logger.error(f"Error poniendo nodo {sensor_id} en IDLE: {e}")
-                    
+
                     success_count = sum(1 for r in idle_results if r[1])
                     success_msg = f"Streams detenidos. Nodos en IDLE: {success_count}/{len(idle_results)}"
                 else:
@@ -2246,40 +2256,70 @@ class DashApp:
                     logger.info(f"Nodo {sensor_id} iniciado individualmente")
                     return dbc.Alert(f"Nodo {sensor_id} iniciado correctamente", color="success")
                 
-                # Acción: Set to Idle (detener)
+                # Acción: Set to Idle (detener o despertar de Sleep)
                 elif "btn-node-idle" in trigger_id:
-                    self.manager.stop(sensor_id)
-                    
-                    # Poner en IDLE (solo modo REAL)
-                    if hasattr(self.manager.client, 'nodes'):
-                        node = self.manager.client.nodes.get(sensor_id)
-                        if node:
-                            try:
-                                idle_status = node.setToIdle()
-                                for _ in range(50):
-                                    if idle_status.complete():
-                                        break
-                                    time.sleep(0.1)
-                            except Exception as e:
-                                logger.warning(f"Error poniendo nodo {sensor_id} en IDLE: {e}")
-                    
-                    logger.info(f"Nodo {sensor_id} detenido")
-                    return dbc.Alert(f"Nodo {sensor_id} detenido", color="warning")
+                    state = self.manager.sensors.get(sensor_id)
+
+                    # Si está en modo Sleep, despertar el nodo
+                    if state and state.sleeping:
+                        if hasattr(self.manager.client, 'nodes'):
+                            node = self.manager.client.nodes.get(sensor_id)
+                            if node:
+                                try:
+                                    idle_status = node.setToIdle()
+                                    for _ in range(50):
+                                        if idle_status.complete():
+                                            break
+                                        time.sleep(0.1)
+
+                                    # Marcar que ya no está en sleep
+                                    state.sleeping = False
+                                    logger.info(f"Nodo {sensor_id} despertado de SLEEP a IDLE")
+                                    return dbc.Alert(f"Nodo {sensor_id} despertado correctamente", color="success")
+                                except Exception as e:
+                                    logger.error(f"Error despertando nodo {sensor_id}: {e}")
+                                    return dbc.Alert(f"Error al despertar nodo: {str(e)}", color="danger")
+
+                    # Si está en streaming, detener
+                    else:
+                        self.manager.stop(sensor_id)
+
+                        # Poner en IDLE (solo modo REAL)
+                        if hasattr(self.manager.client, 'nodes'):
+                            node = self.manager.client.nodes.get(sensor_id)
+                            if node:
+                                try:
+                                    idle_status = node.setToIdle()
+                                    for _ in range(50):
+                                        if idle_status.complete():
+                                            break
+                                        time.sleep(0.1)
+                                except Exception as e:
+                                    logger.warning(f"Error poniendo nodo {sensor_id} en IDLE: {e}")
+
+                        logger.info(f"Nodo {sensor_id} detenido")
+                        return dbc.Alert(f"Nodo {sensor_id} detenido", color="warning")
                 
                 # Acción: Sleep (modo ultra bajo consumo)
                 elif "btn-node-sleep" in trigger_id:
                     self.manager.stop(sensor_id)
-                    
+
                     if hasattr(self.manager.client, 'nodes'):
                         node = self.manager.client.nodes.get(sensor_id)
                         if node:
                             try:
                                 node.sleep()
+
+                                # Marcar el nodo como durmiendo
+                                state = self.manager.sensors.get(sensor_id)
+                                if state:
+                                    state.sleeping = True
+
                                 logger.info(f"Nodo {sensor_id} en modo SLEEP")
                                 return dbc.Alert(
                                     [
                                         html.P(f"Nodo {sensor_id} en modo SLEEP"),
-                                        html.P("Requiere ciclo de power para despertar", className="mb-0 small"),
+                                        html.P("Usa el botón 'WAKE UP' para despertar", className="mb-0 small"),
                                     ],
                                     color="secondary",
                                 )
