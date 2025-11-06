@@ -81,6 +81,10 @@ class MSCLClient:
     def stop_streaming(self, sensor_id: str) -> None:  # pragma: no cover
         raise NotImplementedError
 
+    def reset_sync_network(self) -> None:  # pragma: no cover - interface
+        """Reset SyncSamplingNetwork state to allow restarting sampling."""
+        raise NotImplementedError
+
 
 class DemoMSCLClient(MSCLClient):
     """Demo client that synthesizes accelerometer signals."""
@@ -207,6 +211,10 @@ class DemoMSCLClient(MSCLClient):
         self._threads.pop(sensor_id, None)
         self._stops.pop(sensor_id, None)
         self._callbacks.pop(sensor_id, None)
+
+    def reset_sync_network(self) -> None:
+        """Reset SyncSamplingNetwork state (demo mode - no action needed)."""
+        logger.info("Demo mode: reset_sync_network called (no-op in demo)")
 
 
 class HttpMSCLClient(MSCLClient):
@@ -512,6 +520,14 @@ class HttpMSCLClient(MSCLClient):
         if thread is not None:
             thread.join(timeout=1.0)
         logger.debug("Stopped HTTP streaming for sensor %s", sensor_id)
+
+    def reset_sync_network(self) -> None:
+        """Reset SyncSamplingNetwork state via HTTP."""
+        try:
+            self._perform_request("POST", "/sync_network/reset")
+            logger.info("SyncSamplingNetwork reset requested via HTTP")
+        except Exception as exc:
+            logger.warning("Failed to reset sync network via HTTP: %s", exc)
 
 
 def create_demo_client(stays_config: List[Dict[str, str]], default_fs: float) -> DemoMSCLClient:

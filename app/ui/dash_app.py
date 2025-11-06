@@ -2114,9 +2114,17 @@ class DashApp:
                     if self.manager.sensors[sensor_id].streaming:
                         self.manager.stop(sensor_id)
                         stopped_sensors.append(sensor_id)
-                
+
                 logger.info("Todos los streams detenidos (CSV cerrados, InfluxDB detenido)")
-                
+
+                # Resetear el estado de SyncSamplingNetwork para permitir reinicio
+                if hasattr(self.manager.client, 'reset_sync_network'):
+                    try:
+                        self.manager.client.reset_sync_network()
+                        logger.info("SyncSamplingNetwork reseteada - lista para nuevo muestreo")
+                    except Exception as e:
+                        logger.warning(f"No se pudo resetear SyncSamplingNetwork: {e}")
+
                 # Poner nodos en IDLE (solo en modo REAL)
                 if hasattr(self.manager.client, 'nodes'):
                     idle_results = []

@@ -457,6 +457,26 @@ class RealMSCLClient(MSCLClient):
 
         LOGGER.info(f"Stopped streaming for sensor {sensor_id}")
 
+    def reset_sync_network(self) -> None:
+        """Reset SyncSamplingNetwork state to allow restarting sampling.
+
+        This should be called after stopping all streams to prepare for a new
+        sampling session. It resets the internal state so that initialize_sync_network()
+        can be called again.
+        """
+        LOGGER.info("=" * 80)
+        LOGGER.info("RESETTING SyncSamplingNetwork state...")
+        LOGGER.info("=" * 80)
+
+        # Reset the flag so the network can be reinitialized
+        self._sync_network_started = False
+
+        # Clear the sync network object to force recreation
+        self._sync_network = None
+
+        LOGGER.info("SyncSamplingNetwork state reset - ready for new sampling session")
+        LOGGER.info("=" * 80)
+
     def initialize_sync_network(self, sensor_ids: List[str]) -> None:
         """Initialize SyncSamplingNetwork with multiple nodes BEFORE starting streaming.
 
