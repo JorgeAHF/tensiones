@@ -365,27 +365,29 @@ class StreamManager:
     def _get_or_create_accel_writer(self, sensor_id: str) -> RotatingCsvWriter:
         """Get or create acceleration CSV writer for a specific sensor."""
         if sensor_id not in self._accel_writers:
-            # Prefix con sensor_id para archivos separados
+            # Crear carpeta por sensor: acceleration/sensor_XXXXX/
+            subdir = f"acceleration/sensor_{sensor_id}"
             prefix = f"sensor_{sensor_id}_acceleration"
             self._accel_writers[sensor_id] = self._create_writer(
-                "acceleration",
+                subdir,
                 prefix,
                 self._accel_headers
             )
-            logger.info(f"Created acceleration CSV writer for sensor {sensor_id}")
+            logger.info(f"Created acceleration CSV writer for sensor {sensor_id} in {subdir}/")
         return self._accel_writers[sensor_id]
 
     def _get_or_create_tension_writer(self, sensor_id: str) -> RotatingCsvWriter:
         """Get or create tension CSV writer for a specific sensor."""
         if sensor_id not in self._tension_writers:
-            # Prefix con sensor_id para archivos separados
+            # Crear carpeta por sensor: tension/sensor_XXXXX/
+            subdir = f"tension/sensor_{sensor_id}"
             prefix = f"sensor_{sensor_id}_tension"
             self._tension_writers[sensor_id] = self._create_writer(
-                "tension",
+                subdir,
                 prefix,
                 self._tension_headers
             )
-            logger.info(f"Created tension CSV writer for sensor {sensor_id}")
+            logger.info(f"Created tension CSV writer for sensor {sensor_id} in {subdir}/")
         return self._tension_writers[sensor_id]
 
     def _make_bandpass(self) -> BandpassConfig:
