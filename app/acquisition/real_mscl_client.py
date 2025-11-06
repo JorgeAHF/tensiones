@@ -454,9 +454,93 @@ class RealMSCLClient(MSCLClient):
         del self._threads[sensor_id]
         del self._stops[sensor_id]
         del self._callbacks[sensor_id]
-        
+
         LOGGER.info(f"Stopped streaming for sensor {sensor_id}")
-    
+
+    def initialize_sync_network(self, sensor_ids: List[str]) -> None:
+        """Initialize SyncSamplingNetwork with multiple nodes BEFORE starting streaming.
+
+        This must be called BEFORE start_streaming() when using SYNC mode with multiple sensors.
+        It configures the network with all nodes at once, which is required by MSCL.
+
+        Args:
+            sensor_ids: List of sensor IDs to include in the sync network
+        """
+        import time
+
+        LOGGER.info("=" * 80)
+        LOGGER.info(f"INITIALIZING SYNC NETWORK with {len(sensor_ids)} nodes: {sensor_ids}")
+        LOGGER.info("=" * 80)
+
+        if self._sync_network_started:
+            LOGGER.warning("SyncSamplingNetwork already started - skipping initialization")
+            return
+
+        try:
+            # Create the sync network if it doesn't exist
+            if self._sync_network is None:
+                LOGGER.info("Creating SyncSamplingNetwork...")
+                self._sync_network = mscl.SyncSamplingNetwork(self.base_station)
+
+            # PASO 1: Set all nodes to IDLE first
+            for sensor_id in sensor_ids:
+                node = self.nodes.get(sensor_id)
+                if node is None:
+                    LOGGER.warning(f"Node {sensor_id} not found - skipping")
+                    continue
+
+                try:
+                    LOGGER.info(f"Setting node {sensor_id} to IDLE...")
+                    idle_status = node.setToIdle()
+
+                    # Wait for completion
+                    timeout_counter = 0
+                    while not idle_status.complete() and timeout_counter < 50:
+                        time.sleep(0.1)
+                        timeout_counter += 1
+
+                    if idle_status.result() == mscl.SetToIdleStatus.setToIdleResult_success:
+                        LOGGER.info(f"Node {sensor_id} successfully set to IDLE")
+                    else:
+                        LOGGER.warning(f"setToIdle result for {sensor_id}: {idle_status.result()}")
+
+                except Exception as e:
+                    LOGGER.warning(f"Could not set node {sensor_id} to idle: {e}")
+
+            # PASO 2: Add all nodes to the sync network
+            for sensor_id in sensor_ids:
+                node = self.nodes.get(sensor_id)
+                if node is None:
+                    continue
+
+                LOGGER.info(f"Adding node {sensor_id} to sync network...")
+                self._sync_network.addNode(node)
+                LOGGER.info(f"Node {sensor_id} added to sync network")
+
+            # PASO 3: Configure lossless mode
+            try:
+                LOGGER.info("Configuring lossless mode...")
+                self._sync_network.lossless(True)
+                LOGGER.info("Lossless mode enabled!")
+            except Exception as e:
+                LOGGER.warning(f"Could not enable lossless mode: {e}")
+
+            # PASO 4: Apply configuration
+            LOGGER.info("Applying sync network configuration...")
+            self._sync_network.applyConfiguration()
+            LOGGER.info("Sync network configuration applied")
+
+            # PASO 5: Start sampling
+            LOGGER.info("Starting sync sampling network...")
+            self._sync_network.startSampling()
+            self._sync_network_started = True
+            LOGGER.info(f"SUCCESS: Sync sampling network started with {len(sensor_ids)} nodes!")
+            LOGGER.info("=" * 80)
+
+        except Exception as e:
+            LOGGER.error(f"Failed to initialize sync network: {e}")
+            LOGGER.info("Individual nodes will attempt fallback methods when starting streams")
+
     def _stream_worker(self, sensor_id: str, node: mscl.WirelessNode, callback: Callable[[Sample], None], stop_event: threading.Event) -> None:
         """Worker thread that reads data from node and calls callback."""
         # CRÍTICO: Envolver TODO en try-except para capturar errores del thread
@@ -729,7 +813,17 @@ class RealMSCLClient(MSCLClient):
         import sys
 
         try:
-            # Strategy 1: Try with existing SyncSamplingNetwork (if already created)
+            # If sync network is already started, don't try to modify it
+            # This happens when initialize_sync_network() was called before start_streaming()
+            if self._sync_network_started:
+                LOGGER.info(f"SyncSamplingNetwork already running - node {node.nodeAddress()} should already be part of it")
+                LOGGER.info("Skipping node initialization (already done by initialize_sync_network)")
+                return  # Success - network is already running
+
+            # Legacy path: If initialize_sync_network() wasn't called, try to start with just this node
+            LOGGER.warning("SyncSamplingNetwork not initialized - attempting legacy single-node start...")
+            LOGGER.warning("For multiple sensors, call initialize_sync_network() before start_streaming()")
+
             if self._sync_network is None:
                 LOGGER.info("Creating SyncSamplingNetwork...")
                 self._sync_network = mscl.SyncSamplingNetwork(self.base_station)
@@ -739,64 +833,29 @@ class RealMSCLClient(MSCLClient):
             # Give the node time to be ready
             time.sleep(1.0)
 
-            # PASO 1: DETENER CUALQUIER SESIÓN DE MUESTREO EXISTENTE
+            # Set node to IDLE
             try:
                 LOGGER.info(f"Stopping any existing sampling session on node {node.nodeAddress()}...")
                 idle_status = node.setToIdle()
 
-                # Esperar a que complete
                 timeout_counter = 0
-                while not idle_status.complete() and timeout_counter < 50:  # 5 segundos max
+                while not idle_status.complete() and timeout_counter < 50:
                     time.sleep(0.1)
                     timeout_counter += 1
 
                 if idle_status.result() == mscl.SetToIdleStatus.setToIdleResult_success:
-                    LOGGER.info("Node successfully set to IDLE - ready for starting sampling")
+                    LOGGER.info("Node successfully set to IDLE")
                 else:
                     LOGGER.warning(f"setToIdle result: {idle_status.result()}")
-                    LOGGER.info("Proceeding anyway...")
 
             except Exception as idle_err:
                 LOGGER.warning(f"Could not set node to idle: {idle_err}")
-                LOGGER.info("Node may already be idle, proceeding...")
 
-            # PASO 2: NO RECONFIGURAR - La configuración ya se aplicó en configure_node()
-            # Solo verificamos que el nodo tiene la configuración correcta
-            try:
-                actual_rate_enum = node.getSampleRate()
-                actual_rate_hz = self._sample_rate_enum_to_hz(actual_rate_enum)
-                LOGGER.info(
-                    f"Node {node.nodeAddress()} current configuration: "
-                    f"{actual_rate_hz}Hz (requested: {sample_rate_hz}Hz)"
-                )
-
-                if abs(actual_rate_hz - sample_rate_hz) > 1:
-                    LOGGER.warning(
-                        f"⚠️  Configuration mismatch detected! "
-                        f"Node has {actual_rate_hz}Hz but {sample_rate_hz}Hz was requested. "
-                        f"This may indicate a hardware limitation or configuration issue."
-                    )
-
-            except Exception as verify_err:
-                LOGGER.warning(f"Could not verify node configuration: {verify_err}")
-                LOGGER.info("Will proceed with starting sampling anyway...")
-
-            # Si la red ya está corriendo, debemos detenerla para agregar el nuevo nodo
-            if self._sync_network_started:
-                LOGGER.info("Sync network is already running - stopping to add new node...")
-                try:
-                    self._sync_network.stopSampling()
-                    LOGGER.info("Sync network stopped successfully")
-                    self._sync_network_started = False
-                except Exception as stop_err:
-                    LOGGER.warning(f"Could not stop sync network cleanly: {stop_err}")
-                    LOGGER.info("Will try to add node anyway...")
-
-            # PASO 5: AGREGAR el nodo a la red de sincronización
+            # Add node to network
             self._sync_network.addNode(node)
             LOGGER.info(f"Node {node.nodeAddress()} added to sync network")
 
-            # PASO 6: CONFIGURAR modo lossless
+            # Configure lossless mode
             try:
                 LOGGER.info("Configuring lossless mode...")
                 self._sync_network.lossless(True)
@@ -804,16 +863,16 @@ class RealMSCLClient(MSCLClient):
             except Exception as lossless_err:
                 LOGGER.warning(f"Could not enable lossless mode: {lossless_err}")
 
-            # PASO 7: APLICAR configuración de la red
+            # Apply configuration
             LOGGER.info("Applying sync network configuration...")
             self._sync_network.applyConfiguration()
             LOGGER.info("Sync network configuration applied")
 
-            # PASO 8: INICIAR/REINICIAR muestreo
+            # Start sampling
             LOGGER.info("Starting sync sampling network...")
             self._sync_network.startSampling()
             self._sync_network_started = True
-            LOGGER.info(f"SUCCESS: Sync sampling network (re)started - continuous @ {sample_rate_hz}Hz!")
+            LOGGER.info(f"SUCCESS: Sync sampling network started!")
 
             return  # Success!
                 

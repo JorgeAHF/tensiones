@@ -1896,14 +1896,17 @@ class DashApp:
                 success_sensors = []
                 failed_sensors = []
                 state_data = {}
-                
+                enabled_sensor_ids = []
+
+                # PASO 1: Configurar todos los nodos habilitados
+                logger.info("[SAMPLING NETWORK] PASO 1: Configurando todos los nodos...")
                 for i, (enabled, node_id_dict) in enumerate(zip(enabled_list, id_list)):
                     if not enabled:
                         continue
-                    
+
                     sensor_id = node_id_dict["index"]
                     rate = rates[i]
-                    
+
                     # Construir lista de ejes activos
                     axes = []
                     if axis_x[i]:
@@ -1912,26 +1915,49 @@ class DashApp:
                         axes.append("y")
                     if axis_z[i]:
                         axes.append("z")
-                    
+
                     data_format = formats[i]
-                    
+
                     # Guardar configuración en state
                     state_data[sensor_id] = {
                         "rate": rate,
                         "axes": axes,
                         "format": data_format,
                     }
-                    
+
                     try:
-                        # Configurar e iniciar nodo
+                        # Solo configurar, NO iniciar todavía
+                        logger.info(f"Configurando nodo {sensor_id}: {rate}Hz, {axes}, {data_format}")
                         self.manager.configure(sensor_id, sample_rate=rate, axes=axes, data_format=data_format)
+                        enabled_sensor_ids.append(sensor_id)
+                        logger.info(f"Nodo {sensor_id} configurado correctamente")
+                    except Exception as e:
+                        error_detail = traceback.format_exc()
+                        logger.error(f"Error configurando nodo {sensor_id}: {e}\n{error_detail}")
+                        failed_sensors.append((sensor_id, f"Config error: {str(e)}"))
+
+                # PASO 2: Inicializar SyncSamplingNetwork con TODOS los nodos habilitados
+                if enabled_sensor_ids and hasattr(self.manager.client, 'initialize_sync_network'):
+                    try:
+                        logger.info(f"[SAMPLING NETWORK] PASO 2: Inicializando SyncSamplingNetwork con {len(enabled_sensor_ids)} nodos: {enabled_sensor_ids}")
+                        self.manager.client.initialize_sync_network(enabled_sensor_ids)
+                        logger.info("SyncSamplingNetwork inicializada correctamente")
+                    except Exception as e:
+                        logger.warning(f"No se pudo inicializar SyncSamplingNetwork: {e}")
+                        logger.info("Los nodos intentarán métodos alternativos individualmente")
+
+                # PASO 3: Iniciar threads de streaming para cada nodo
+                logger.info("[SAMPLING NETWORK] PASO 3: Iniciando streaming threads...")
+                for sensor_id in enabled_sensor_ids:
+                    try:
+                        logger.info(f"Iniciando streaming para nodo {sensor_id}...")
                         self.manager.start(sensor_id)
                         success_sensors.append(sensor_id)
-                        logger.info(f"Nodo {sensor_id} iniciado correctamente ({rate}Hz, {axes}, {data_format})")
+                        logger.info(f"Nodo {sensor_id} iniciado correctamente")
                     except Exception as e:
                         # CRÍTICO: Capturar traceback completo
                         error_detail = traceback.format_exc()
-                        
+
                         # Registrar en el logger con TODOS los detalles
                         logger.error(
                             f"Error iniciando nodo {sensor_id}:\n"
@@ -1939,7 +1965,7 @@ class DashApp:
                             f"Mensaje: {str(e)}\n"
                             f"Traceback completo:\n{error_detail}"
                         )
-                        
+
                         # También imprimir a consola para debugging inmediato
                         print(f"\n{'='*80}")
                         print(f"ERROR DETALLADO - Nodo {sensor_id}")
@@ -1949,7 +1975,7 @@ class DashApp:
                         print(f"\nTraceback completo:")
                         print(error_detail)
                         print(f"{'='*80}\n")
-                        
+
                         failed_sensors.append((sensor_id, str(e)))
                         logger.error(f"Error iniciando nodo {sensor_id}: {e}")
                 
