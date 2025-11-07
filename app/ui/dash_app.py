@@ -1142,7 +1142,7 @@ class DashApp:
             [
                 html.H1("MSCL TENSION PLATFORM", className="mb-4 fw-bold"),
                 dbc.Tabs(
-                    [network_control_tab, realtime_tab, config_tab, accel_tab, grafana_tab],
+                    [network_control_tab, realtime_tab, accel_tab],
                     id="tabs",
                     active_tab="network-control",
                     className="mb-4",
@@ -1819,12 +1819,6 @@ class DashApp:
                                                 dbc.ButtonGroup(
                                                     [
                                                         dbc.Button(
-                                                            [html.I(className="bi bi-play-fill me-1"), "SAMPLE"],
-                                                            id={"type": "btn-node-sample", "index": sensor_id},
-                                                            color="primary",
-                                                            disabled=is_streaming or is_sleeping,
-                                                        ),
-                                                        dbc.Button(
                                                             [html.I(className="bi bi-pause-fill me-1"), "SET TO IDLE" if not is_sleeping else "WAKE UP"],
                                                             id={"type": "btn-node-idle", "index": sensor_id},
                                                             color="warning" if not is_sleeping else "success",
@@ -2230,37 +2224,23 @@ class DashApp:
 
         @app.callback(
             Output({"type": "individual-node-feedback", "index": dash.dependencies.MATCH}, "children"),
-            Input({"type": "btn-node-sample", "index": dash.dependencies.MATCH}, "n_clicks"),
             Input({"type": "btn-node-idle", "index": dash.dependencies.MATCH}, "n_clicks"),
             Input({"type": "btn-node-sleep", "index": dash.dependencies.MATCH}, "n_clicks"),
-            State({"type": "btn-node-sample", "index": dash.dependencies.MATCH}, "id"),
+            State({"type": "btn-node-idle", "index": dash.dependencies.MATCH}, "id"),
             prevent_initial_call=True,
         )
-        def handle_individual_node_actions(n_sample, n_idle, n_sleep, button_id):
-            """Maneja las acciones individuales de cada nodo."""
+        def handle_individual_node_actions(n_idle, n_sleep, button_id):
+            """Maneja las acciones individuales de cada nodo (IDLE y SLEEP)."""
             ctx = callback_context
             if not ctx.triggered:
                 return dash.no_update
-            
+
             trigger_id = ctx.triggered[0]["prop_id"]
             sensor_id = button_id["index"]
-            
+
             try:
-                # Acción: Sample (configurar e iniciar)
-                if "btn-node-sample" in trigger_id:
-                    # Usar configuración actual del nodo
-                    state = self.manager.sensors.get(sensor_id)
-                    if state:
-                        rate = state.info.sample_rate_hz or 128
-                        axes = state.info.axes or ["z"]
-                        self.manager.configure_sensor(sensor_id, sample_rate_hz=rate, axes=axes)
-                    
-                    self.manager.start(sensor_id)
-                    logger.info(f"Nodo {sensor_id} iniciado individualmente")
-                    return dbc.Alert(f"Nodo {sensor_id} iniciado correctamente", color="success")
-                
                 # Acción: Set to Idle (detener o despertar de Sleep)
-                elif "btn-node-idle" in trigger_id:
+                if "btn-node-idle" in trigger_id:
                     state = self.manager.sensors.get(sensor_id)
 
                     # Si está en modo Sleep, despertar el nodo
@@ -2304,7 +2284,7 @@ class DashApp:
                         return dbc.Alert(f"Nodo {sensor_id} detenido", color="warning")
                 
                 # Acción: Sleep (modo ultra bajo consumo)
-                elif "btn-node-sleep" in trigger_id:
+                if "btn-node-sleep" in trigger_id:
                     self.manager.stop(sensor_id)
 
                     if hasattr(self.manager.client, 'nodes'):
