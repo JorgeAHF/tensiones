@@ -938,7 +938,10 @@ class StreamManager:
         ]
         # Escribir a CSV (archivo separado por sensor)
         tension_writer = self._get_or_create_tension_writer(sensor_id)
-        tension_writer.writerow(tension_row)
+        if tension_writer is not None:
+            tension_writer.writerow(tension_row)
+        else:
+            logger.debug(f"Sensor {sensor_id} not streaming, skipping tension CSV write (alt path)")
 
     def connect_gateway(self, host: str, port: int) -> GatewayStatus:
         logger.info("Connecting to gateway at %s:%s", host, port)
