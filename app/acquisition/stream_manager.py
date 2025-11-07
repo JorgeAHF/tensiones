@@ -24,20 +24,25 @@ from app.utils.validators import QualityAssessment, Thresholds
 logger = logging.getLogger(__name__)
 
 
-def is_valid_acceleration_sample(accel_values: np.ndarray, expected_range: tuple = (-600000, 600000)) -> bool:
+def is_valid_acceleration_sample(accel_values: np.ndarray, expected_range: tuple = (-10.0, 10.0)) -> bool:
     """
     Valida si una muestra de aceleración es confiable.
-    
+
     Args:
         accel_values: Array [x, y, z] con valores de aceleración
-        expected_range: Rango válido para valores (en unidades raw o g)
-    
+        expected_range: Rango válido para valores en g's
+            - Default (-10.0, 10.0): Para datos calibrados en g's
+            - Usar (-600000, 600000): Para datos raw sin calibrar
+
     Returns:
         True si la muestra es válida, False si es sospechosa
-    
+
     Criterios de validación:
     - No debe tener todos los ejes en cero (muestra corrupta)
     - Debe estar dentro de rango físicamente posible
+
+    Nota: Para acelerómetros estáticos o vibraciones, valores normales
+    están en el rango [-3, 3] g. Valores > 10g indican datos corruptos.
     """
     if len(accel_values) < 3:
         return False
@@ -761,8 +766,9 @@ class StreamManager:
             accel_y = accel[1] if 'y' in active_axes else float('nan')
             accel_z = accel[2] if 'z' in active_axes else float('nan')
             
-            # Validar la muestra
-            is_valid = is_valid_acceleration_sample(accel)
+            # Validar la muestra (datos calibrados en g's)
+            # Rango razonable: -10 a +10 g (caídas libres y impactos fuertes < 10g)
+            is_valid = is_valid_acceleration_sample(accel, expected_range=(-10.0, 10.0))
             
             # Guardar en CSV con flag de validez
             records.append(
@@ -858,8 +864,8 @@ class StreamManager:
                     # Usar la última muestra VÁLIDA
                     last_valid_accel = valid_samples_array[-1]
                     
-                    # Validar una vez más la última muestra antes de guardar
-                    if not is_valid_acceleration_sample(last_valid_accel):
+                    # Validar una vez más la última muestra antes de guardar (datos en g's)
+                    if not is_valid_acceleration_sample(last_valid_accel, expected_range=(-10.0, 10.0)):
                         logger.warning(f"[INFLUXDB] Last sample failed validation, skipping")
                     else:
                         # Obtener ejes configurados del sensor
