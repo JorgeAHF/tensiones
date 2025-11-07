@@ -617,6 +617,7 @@ class DashApp:
             label="Acelerómetro",
             tab_id="accelerometer",
             children=[
+                dcc.Store(id="accel-active-sensors", data=[]),  # Store para rastrear sensores activos
                 html.Div(
                     id="accel-sensors-container",
                     children=[
@@ -742,18 +743,31 @@ class DashApp:
         # ===== CALLBACKS PARA PESTAÑA ACELERÓMETRO DINÁMICO =====
 
         @app.callback(
-            Output("accel-sensors-container", "children"),
+            Output("accel-active-sensors", "data"),
             Input("interval", "n_intervals"),
+            State("accel-active-sensors", "data"),
         )
-        def populate_accelerometer_sensors(n):
-            """Genera dinámicamente tarjetas para todos los sensores en streaming."""
-            streaming_sensors = [
-                (sensor_id, state)
+        def track_active_sensors(n, current_sensors):
+            """Detecta cambios en sensores activos para evitar recrear tarjetas innecesariamente."""
+            streaming_sensor_ids = sorted([
+                sensor_id
                 for sensor_id, state in self.manager.sensors.items()
                 if state.streaming
-            ]
+            ])
 
-            if not streaming_sensors:
+            # Solo actualizar si la lista cambió
+            if streaming_sensor_ids != current_sensors:
+                return streaming_sensor_ids
+
+            raise dash.exceptions.PreventUpdate
+
+        @app.callback(
+            Output("accel-sensors-container", "children"),
+            Input("accel-active-sensors", "data"),
+        )
+        def populate_accelerometer_sensors(active_sensors):
+            """Genera tarjetas SOLO cuando cambia la lista de sensores activos (evita parpadeo)."""
+            if not active_sensors:
                 return [
                     dbc.Alert(
                         "⏸️ No hay sensores activos. Inicie el monitoreo desde la pestaña 'Control de Red'.",
@@ -763,7 +777,7 @@ class DashApp:
                 ]
 
             cards = []
-            for sensor_id, state in streaming_sensors:
+            for sensor_id in active_sensors:
                 card = dbc.Card(
                     [
                         dbc.CardHeader(f"Acelerómetro en Tiempo Real - Sensor {sensor_id}"),
@@ -771,7 +785,10 @@ class DashApp:
                             [
                                 dcc.Graph(
                                     id={"type": "accel-graph", "index": sensor_id},
-                                    config={"displayModeBar": True},
+                                    config={
+                                        "displayModeBar": False,  # Ocultar barra para menos overhead
+                                        "staticPlot": False,
+                                    },
                                     style={"height": "500px"},
                                 ),
                             ]
@@ -789,28 +806,31 @@ class DashApp:
             State({"type": "accel-graph", "index": dash.dependencies.MATCH}, "id"),
         )
         def update_accelerometer_graph(n, graph_id):
-            """Actualiza gráfica de acelerómetro para un sensor específico."""
+            """Actualiza gráfica de acelerómetro - OPTIMIZADO para fluidez."""
             sensor_id = graph_id["index"]
 
             try:
-                # Obtener buffer continuo (últimos 3 segundos)
-                buffer_data = self.realtime.get_display_buffer(sensor_id, window_seconds=3.0)
+                # Verificar que el sensor siga activo
+                sensor_state = self.manager.sensors.get(sensor_id)
+                if not sensor_state or not sensor_state.streaming:
+                    raise dash.exceptions.PreventUpdate
 
-                if buffer_data is None:
-                    empty_fig = go.Figure()
-                    empty_fig.update_layout(title="⏳ Esperando datos...", template="plotly_white", height=500)
-                    return empty_fig
+                # Obtener buffer más corto para menos datos y más fluidez (2 segundos)
+                buffer_data = self.realtime.get_display_buffer(sensor_id, window_seconds=2.0)
+
+                if buffer_data is None or len(buffer_data[0]) == 0:
+                    raise dash.exceptions.PreventUpdate
 
                 timestamps, samples = buffer_data
 
                 # Ordenar por timestamp
-                if len(timestamps) > 0:
+                if len(timestamps) > 1:
                     sort_indices = np.argsort(timestamps)
                     timestamps = timestamps[sort_indices]
                     samples = samples[sort_indices]
 
-                # Submuestreo: tomar 1 de cada 2 muestras
-                subsample_rate = 2
+                # Submuestreo más agresivo para menos puntos = más fluido (1 de cada 4)
+                subsample_rate = 4
                 timestamps = timestamps[::subsample_rate]
                 samples = samples[::subsample_rate]
 
@@ -819,7 +839,7 @@ class DashApp:
                     time_offset = timestamps[0]
                     times = timestamps - time_offset
                 else:
-                    times = np.array([])
+                    raise dash.exceptions.PreventUpdate
 
                 # Extraer cada eje
                 if samples.ndim == 2 and samples.shape[1] >= 3:
@@ -827,71 +847,90 @@ class DashApp:
                     y_data = samples[:, 1]
                     z_data = samples[:, 2]
                 else:
-                    x_data = np.zeros(len(times))
-                    y_data = np.zeros(len(times))
-                    z_data = np.zeros(len(times))
+                    raise dash.exceptions.PreventUpdate
 
-                # Obtener configuración actual del sensor
-                sensor_state = self.manager.sensors.get(sensor_id)
+                # Obtener ejes activos
                 active_axes = ['x', 'y', 'z']
-                if sensor_state and sensor_state.info.axes:
+                if sensor_state.info.axes:
                     active_axes = [axis.lower() for axis in sensor_state.info.axes]
 
-                # Crear gráfica optimizada con Scattergl
+                # Crear gráfica ULTRA-OPTIMIZADA
                 fig = go.Figure()
 
                 if 'x' in active_axes:
                     fig.add_trace(go.Scattergl(
-                        x=times, y=x_data, mode='lines', name='X',
-                        line=dict(color='#e74c3c', width=1.5),
+                        x=times, y=x_data,
+                        mode='lines',
+                        name='X',
+                        line=dict(color='#e74c3c', width=1.2),
+                        hoverinfo='skip',  # Desactivar hover para mejor rendimiento
                     ))
 
                 if 'y' in active_axes:
                     fig.add_trace(go.Scattergl(
-                        x=times, y=y_data, mode='lines', name='Y',
-                        line=dict(color='#3498db', width=1.5),
+                        x=times, y=y_data,
+                        mode='lines',
+                        name='Y',
+                        line=dict(color='#3498db', width=1.2),
+                        hoverinfo='skip',
                     ))
 
                 if 'z' in active_axes:
                     fig.add_trace(go.Scattergl(
-                        x=times, y=z_data, mode='lines', name='Z',
-                        line=dict(color='#2ecc71', width=1.5),
+                        x=times, y=z_data,
+                        mode='lines',
+                        name='Z',
+                        line=dict(color='#2ecc71', width=1.2),
+                        hoverinfo='skip',
                     ))
 
-                # Título dinámico
+                # Layout MINIMALISTA para mejor rendimiento
                 axes_str = ', '.join([a.upper() for a in active_axes])
                 fig.update_layout(
-                    title=f"Sensor {sensor_id} - {len(times)} muestras | Ejes: {axes_str}",
+                    title={
+                        'text': f"Sensor {sensor_id} | {len(times)} pts | {axes_str}",
+                        'font': {'size': 14}
+                    },
                     xaxis_title="Tiempo (s)",
-                    yaxis_title="Aceleración (g)",
+                    yaxis_title="g",
                     template="plotly_white",
                     height=500,
-                    hovermode='x unified',
+                    hovermode=False,  # Desactivar hover mode
                     showlegend=True,
-                    uirevision=f'accel-{sensor_id}',
-                    margin=dict(l=50, r=20, t=60, b=50),
+                    uirevision=f'accel-{sensor_id}',  # CRÍTICO: preserva zoom/pan
+                    margin=dict(l=50, r=10, t=50, b=40),
                     legend=dict(
                         orientation="h",
                         yanchor="bottom",
-                        y=1.12,
+                        y=1.05,
                         xanchor="center",
                         x=0.5,
-                        bgcolor="rgba(255, 255, 255, 0.8)",
-                        bordercolor="#ddd",
-                        borderwidth=1
                     ),
+                    # Optimizaciones de animación
+                    transition={'duration': 0},  # Sin transiciones
                 )
 
-                fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
-                fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+                # Ejes simplificados
+                fig.update_xaxes(
+                    showgrid=True,
+                    gridwidth=0.5,
+                    gridcolor='#e0e0e0',
+                    fixedrange=False,  # Permitir zoom
+                )
+                fig.update_yaxes(
+                    showgrid=True,
+                    gridwidth=0.5,
+                    gridcolor='#e0e0e0',
+                    fixedrange=False,
+                )
 
                 return fig
 
+            except dash.exceptions.PreventUpdate:
+                raise
             except Exception as e:
                 logger.error(f"[ACCEL] Error updating sensor {sensor_id}: {e}", exc_info=True)
-                error_fig = go.Figure()
-                error_fig.update_layout(title=f"❌ Error: {str(e)}", template="plotly_white", height=500)
-                return error_fig
+                raise dash.exceptions.PreventUpdate
 
         # ===== CALLBACKS PARA CONTROL DE RED (ESTILO SENSORCONNECT) =====
         
