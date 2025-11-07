@@ -518,13 +518,16 @@ class DashApp:
                                                 dcc.Dropdown(
                                                     id="config-sample-rate-new",
                                                     options=[
-                                                        {"label": "256 Hz (Mínimo soportado)", "value": 256},
+                                                        {"label": "32 Hz", "value": 32},
+                                                        {"label": "64 Hz", "value": 64},
+                                                        {"label": "128 Hz", "value": 128},
+                                                        {"label": "256 Hz", "value": 256},
                                                         {"label": "512 Hz", "value": 512},
                                                         {"label": "1024 Hz (1 kHz)", "value": 1024},
                                                         {"label": "2048 Hz (2 kHz)", "value": 2048},
                                                         {"label": "4096 Hz (4 kHz) - High Speed", "value": 4096},
                                                     ],
-                                                    value=256,
+                                                    value=128,
                                                     clearable=False,
                                                 ),
                                             ],
@@ -1899,11 +1902,11 @@ class DashApp:
                                 {"label": "2048 Hz", "value": 2048},
                                 {"label": "4096 Hz", "value": 4096},
                             ],
-                            value=state.info.sample_rate_hz or 256,
+                            value=state.info.sample_rate_hz or 128,
                         )),
                         html.Td([
-                            dbc.Checkbox(id={"type": "network-node-axis-x", "index": sensor_id}, value=True, label="X", className="me-2"),
-                            dbc.Checkbox(id={"type": "network-node-axis-y", "index": sensor_id}, value=True, label="Y", className="me-2"),
+                            dbc.Checkbox(id={"type": "network-node-axis-x", "index": sensor_id}, value=False, label="X", className="me-2"),
+                            dbc.Checkbox(id={"type": "network-node-axis-y", "index": sensor_id}, value=False, label="Y", className="me-2"),
                             dbc.Checkbox(id={"type": "network-node-axis-z", "index": sensor_id}, value=True, label="Z"),
                         ]),
                         html.Td(dbc.Select(
@@ -2248,8 +2251,8 @@ class DashApp:
                     # Usar configuración actual del nodo
                     state = self.manager.sensors.get(sensor_id)
                     if state:
-                        rate = state.info.sample_rate_hz or 256
-                        axes = state.info.axes or ["x", "y", "z"]
+                        rate = state.info.sample_rate_hz or 128
+                        axes = state.info.axes or ["z"]
                         self.manager.configure_sensor(sensor_id, sample_rate_hz=rate, axes=axes)
                     
                     self.manager.start(sensor_id)

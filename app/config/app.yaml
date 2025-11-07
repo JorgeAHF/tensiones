@@ -11,7 +11,7 @@ analysis:
   update_period_sec: 5
   welch_window: hann
   window_sec: 30
-default_fs_hz: 256
+default_fs_hz: 128
 modes:
   demo: false
 storage:
@@ -21,7 +21,7 @@ storage:
     base_dir: null
   rotation:
     max_mb: 100
-    minutes: 10
+    minutes: 2
     mode: time
 timezone: America/Mexico_City
 ui:
@@ -30,7 +30,7 @@ ui:
   display_buffer_seconds: 300
 streaming:
   buffer_seconds: 300
-  sample_rate_hz: 256
+  sample_rate_hz: 128
 influxdb:
   enabled: true
   url: http://localhost:8086
