@@ -617,54 +617,15 @@ class DashApp:
             label="Acelerómetro",
             tab_id="accelerometer",
             children=[
-                # Store para mantener el estado de pausa/reanudación
-                dcc.Store(id="accel-paused", data=False),
-                
-                dbc.Card(
-                    [
-                        dbc.CardHeader("Datos del Acelerómetro en Tiempo Real - Sensor 10603"),
-                        dbc.CardBody(
-                            [
-                                dbc.Row(
-                                    [
-                                        dbc.Col(
-                                            [
-                                                html.Div(id="accel-status", className="mt-2"),
-                                            ],
-                                            md=9,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                dbc.Button(
-                                                    "⏸ Detener Gráfico",
-                                                    id="accel-pause-btn",
-                                                    color="warning",
-                                                    className="w-100",
-                                                ),
-                                            ],
-                                            md=3,
-                                        ),
-                                    ],
-                                    className="mb-3",
-                                ),
-                                dbc.Row(
-                                    [
-                                        dbc.Col(
-                                            [
-                                                dcc.Graph(
-                                                    id="accel-graph-combined",
-                                                    config={"displayModeBar": True},
-                                                    style={"height": "600px"},
-                                                ),
-                                            ],
-                                            md=12,
-                                        ),
-                                    ],
-                                ),
-                            ]
-                        ),
-                    ],
-                    className="mb-4 shadow-sm",
+                html.Div(
+                    id="accel-sensors-container",
+                    children=[
+                        dbc.Alert(
+                            "⏳ Esperando sensores activos...",
+                            color="info",
+                            className="text-center"
+                        )
+                    ]
                 ),
             ],
         )
@@ -778,78 +739,88 @@ class DashApp:
                 self.manager.stop(sensor_value)
             return sensor_value
 
-        # Callback para controlar el botón de pausa
-        @app.callback(
-            Output("accel-paused", "data"),
-            Output("accel-pause-btn", "children"),
-            Output("accel-pause-btn", "color"),
-            Input("accel-pause-btn", "n_clicks"),
-            State("accel-paused", "data"),
-        )
-        def toggle_pause(n_clicks, is_paused):
-            """Alterna entre pausar y reanudar la actualización del gráfico."""
-            # Manejar el caso inicial (n_clicks es None)
-            if n_clicks is None or n_clicks == 0:
-                return False, "⏸ Detener Gráfico", "warning"
-            
-            # Alternar el estado (manejar caso cuando is_paused es None)
-            new_paused = not (is_paused or False)
-            
-            if new_paused:
-                # Ahora está pausado
-                return True, "▶️ Reanudar Gráfico", "success"
-            else:
-                # Ahora está activo
-                return False, "⏸ Detener Gráfico", "warning"
+        # ===== CALLBACKS PARA PESTAÑA ACELERÓMETRO DINÁMICO =====
 
         @app.callback(
-            Output("accel-graph-combined", "figure"),
-            Output("accel-status", "children"),
+            Output("accel-sensors-container", "children"),
             Input("interval", "n_intervals"),
-            State("accel-paused", "data"),
         )
-        def update_accelerometer(n, is_paused):
-            """Actualiza la gráfica del acelerómetro en tiempo real - Sensor 10603."""
-            import numpy as np
-            
-            # Si está pausado, no actualizar
-            if is_paused:
-                raise dash.exceptions.PreventUpdate
-            
-            # Siempre usar sensor 10603
-            sensor_id = "10603"
-            
+        def populate_accelerometer_sensors(n):
+            """Genera dinámicamente tarjetas para todos los sensores en streaming."""
+            streaming_sensors = [
+                (sensor_id, state)
+                for sensor_id, state in self.manager.sensors.items()
+                if state.streaming
+            ]
+
+            if not streaming_sensors:
+                return [
+                    dbc.Alert(
+                        "⏸️ No hay sensores activos. Inicie el monitoreo desde la pestaña 'Control de Red'.",
+                        color="warning",
+                        className="text-center"
+                    )
+                ]
+
+            cards = []
+            for sensor_id, state in streaming_sensors:
+                card = dbc.Card(
+                    [
+                        dbc.CardHeader(f"Acelerómetro en Tiempo Real - Sensor {sensor_id}"),
+                        dbc.CardBody(
+                            [
+                                dcc.Graph(
+                                    id={"type": "accel-graph", "index": sensor_id},
+                                    config={"displayModeBar": True},
+                                    style={"height": "500px"},
+                                ),
+                            ]
+                        ),
+                    ],
+                    className="mb-4 shadow-sm",
+                )
+                cards.append(card)
+
+            return cards
+
+        @app.callback(
+            Output({"type": "accel-graph", "index": dash.dependencies.MATCH}, "figure"),
+            Input("interval", "n_intervals"),
+            State({"type": "accel-graph", "index": dash.dependencies.MATCH}, "id"),
+        )
+        def update_accelerometer_graph(n, graph_id):
+            """Actualiza gráfica de acelerómetro para un sensor específico."""
+            sensor_id = graph_id["index"]
+
             try:
-                # Obtener buffer continuo (últimos 3 segundos - balance entre suavidad y performance)
+                # Obtener buffer continuo (últimos 3 segundos)
                 buffer_data = self.realtime.get_display_buffer(sensor_id, window_seconds=3.0)
-                
+
                 if buffer_data is None:
                     empty_fig = go.Figure()
-                    empty_fig.update_layout(title="⏳ Esperando datos...", template="plotly_white", height=600)
-                    status = dbc.Alert("⏸️ Sin datos - Configure el sensor en la pestaña 'Configuración de Sensores'", color="warning")
-                    return empty_fig, status
-                
+                    empty_fig.update_layout(title="⏳ Esperando datos...", template="plotly_white", height=500)
+                    return empty_fig
+
                 timestamps, samples = buffer_data
-                
-                # CRÍTICO: Ordenar por timestamp para evitar líneas verticales extrañas
+
+                # Ordenar por timestamp
                 if len(timestamps) > 0:
                     sort_indices = np.argsort(timestamps)
                     timestamps = timestamps[sort_indices]
                     samples = samples[sort_indices]
-                
-                # Submuestreo moderado: tomar 1 de cada 2 muestras (128Hz efectivo)
-                # Esto da ~384 puntos por 3 segundos - óptimo para WebGL
+
+                # Submuestreo: tomar 1 de cada 2 muestras
                 subsample_rate = 2
                 timestamps = timestamps[::subsample_rate]
                 samples = samples[::subsample_rate]
-                
+
                 # Calcular tiempos relativos
                 if len(timestamps) > 0:
                     time_offset = timestamps[0]
                     times = timestamps - time_offset
                 else:
                     times = np.array([])
-                
+
                 # Extraer cada eje
                 if samples.ndim == 2 and samples.shape[1] >= 3:
                     x_data = samples[:, 0]
@@ -859,79 +830,68 @@ class DashApp:
                     x_data = np.zeros(len(times))
                     y_data = np.zeros(len(times))
                     z_data = np.zeros(len(times))
-                
-                # NUEVO: Obtener configuración actual del sensor para saber qué ejes mostrar
+
+                # Obtener configuración actual del sensor
                 sensor_state = self.manager.sensors.get(sensor_id)
-                active_axes = ['x', 'y', 'z']  # Por defecto todos
+                active_axes = ['x', 'y', 'z']
                 if sensor_state and sensor_state.info.axes:
                     active_axes = [axis.lower() for axis in sensor_state.info.axes]
-                
-                # Crear gráfica OPTIMIZADA con Scattergl (aceleración WebGL)
+
+                # Crear gráfica optimizada con Scattergl
                 fig = go.Figure()
-                
-                # Solo agregar trazas para los ejes activos
+
                 if 'x' in active_axes:
                     fig.add_trace(go.Scattergl(
                         x=times, y=x_data, mode='lines', name='X',
                         line=dict(color='#e74c3c', width=1.5),
-                        visible=True,
                     ))
-                
+
                 if 'y' in active_axes:
                     fig.add_trace(go.Scattergl(
                         x=times, y=y_data, mode='lines', name='Y',
                         line=dict(color='#3498db', width=1.5),
-                        visible=True,
                     ))
-                
+
                 if 'z' in active_axes:
                     fig.add_trace(go.Scattergl(
                         x=times, y=z_data, mode='lines', name='Z',
                         line=dict(color='#2ecc71', width=1.5),
-                        visible=True,
                     ))
-                
-                # Título dinámico con ejes activos
+
+                # Título dinámico
                 axes_str = ', '.join([a.upper() for a in active_axes])
                 fig.update_layout(
-                    title=f"Acelerómetro 10603 - {len(times)} puntos @ 128Hz | Ejes: {axes_str}",
+                    title=f"Sensor {sensor_id} - {len(times)} muestras | Ejes: {axes_str}",
                     xaxis_title="Tiempo (s)",
                     yaxis_title="Aceleración (g)",
                     template="plotly_white",
-                    height=600,
-                    hovermode='x unified',  # Mejor para tiempo real
+                    height=500,
+                    hovermode='x unified',
                     showlegend=True,
-                    uirevision='accel-10603',  # ID único y constante - preserva TODOS los estados de UI
-                    margin=dict(l=50, r=20, t=80, b=50),  # Más margen superior para la leyenda
+                    uirevision=f'accel-{sensor_id}',
+                    margin=dict(l=50, r=20, t=60, b=50),
                     legend=dict(
-                        orientation="h",  # Leyenda horizontal
+                        orientation="h",
                         yanchor="bottom",
-                        y=1.15,  # Más separación del área de gráfica
-                        xanchor="center",  # Centrada
-                        x=0.5,  # En el centro horizontal
-                        bgcolor="rgba(255, 255, 255, 0.8)",  # Fondo semi-transparente
+                        y=1.12,
+                        xanchor="center",
+                        x=0.5,
+                        bgcolor="rgba(255, 255, 255, 0.8)",
                         bordercolor="#ddd",
                         borderwidth=1
                     ),
                 )
-                
-                # Configuración optimizada de ejes
+
                 fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
                 fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
-                
-                status = dbc.Alert(
-                    f"✅ ACTIVO | {len(times)} muestras | Ejes: {axes_str} | Actualización: 500ms",
-                    color="success"
-                )
-                
-                return fig, status
-                
+
+                return fig
+
             except Exception as e:
-                logger.error(f"[ACCEL] Error: {e}", exc_info=True)
+                logger.error(f"[ACCEL] Error updating sensor {sensor_id}: {e}", exc_info=True)
                 error_fig = go.Figure()
-                error_fig.update_layout(title=f"❌ Error", template="plotly_white", height=600)
-                status = dbc.Alert(f"❌ Error: {str(e)}", color="danger")
-                return error_fig, status
+                error_fig.update_layout(title=f"❌ Error: {str(e)}", template="plotly_white", height=500)
+                return error_fig
 
         # ===== CALLBACKS PARA CONTROL DE RED (ESTILO SENSORCONNECT) =====
         
