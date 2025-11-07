@@ -368,8 +368,18 @@ class StreamManager:
         path = self.storage_base / subdir
         return RotatingCsvWriter(path, prefix, headers, policy)
 
-    def _get_or_create_accel_writer(self, sensor_id: str) -> RotatingCsvWriter:
-        """Get or create acceleration CSV writer for a specific sensor."""
+    def _get_or_create_accel_writer(self, sensor_id: str) -> Optional[RotatingCsvWriter]:
+        """Get or create acceleration CSV writer for a specific sensor.
+
+        Returns None if sensor is not streaming (prevents creating files after stop).
+        """
+        # Verificar que el sensor esté en streaming
+        sensor_state = self.sensors.get(sensor_id)
+        if not sensor_state or not sensor_state.streaming:
+            # No crear nuevo writer si el sensor no está en streaming
+            # Esto previene crear archivos vacíos después de stop()
+            return None
+
         if sensor_id not in self._accel_writers:
             # Crear carpeta por sensor: acceleration/sensor_XXXXX/
             subdir = f"acceleration/sensor_{sensor_id}"
@@ -382,8 +392,18 @@ class StreamManager:
             logger.info(f"Created acceleration CSV writer for sensor {sensor_id} in {subdir}/")
         return self._accel_writers[sensor_id]
 
-    def _get_or_create_tension_writer(self, sensor_id: str) -> RotatingCsvWriter:
-        """Get or create tension CSV writer for a specific sensor."""
+    def _get_or_create_tension_writer(self, sensor_id: str) -> Optional[RotatingCsvWriter]:
+        """Get or create tension CSV writer for a specific sensor.
+
+        Returns None if sensor is not streaming (prevents creating files after stop).
+        """
+        # Verificar que el sensor esté en streaming
+        sensor_state = self.sensors.get(sensor_id)
+        if not sensor_state or not sensor_state.streaming:
+            # No crear nuevo writer si el sensor no está en streaming
+            # Esto previene crear archivos vacíos después de stop()
+            return None
+
         if sensor_id not in self._tension_writers:
             # Crear carpeta por sensor: tension/sensor_XXXXX/
             subdir = f"tension/sensor_{sensor_id}"
@@ -711,22 +731,25 @@ class StreamManager:
             
             # Escribir a CSV (archivo separado por sensor)
             tension_writer = self._get_or_create_tension_writer(sensor_id)
-            tension_writer.writerow([
-                format_timestamp(now_local),
-                format_timestamp(now_utc),
-                stay.stay_id,
-                sensor_id,
-                result.f1_hz,
-                tension.tension_newton,
-                tension.tension_kN,
-                result.snr_db,
-                result.peak_prominence,
-                len(samples),
-                256.0,  # TODO: obtener fs real
-                self.mode.get(sensor_id, "AUTO"),
-                stay.k_coefficient,
-                qa.flag.value,
-            ])
+            if tension_writer is not None:
+                tension_writer.writerow([
+                    format_timestamp(now_local),
+                    format_timestamp(now_utc),
+                    stay.stay_id,
+                    sensor_id,
+                    result.f1_hz,
+                    tension.tension_newton,
+                    tension.tension_kN,
+                    result.snr_db,
+                    result.peak_prominence,
+                    len(samples),
+                    256.0,  # TODO: obtener fs real
+                    self.mode.get(sensor_id, "AUTO"),
+                    stay.k_coefficient,
+                    qa.flag.value,
+                ])
+            else:
+                logger.debug(f"Sensor {sensor_id} not streaming, skipping tension CSV write")
             
         except Exception as e:
             logger.error(f"Error procesando FFT para sensor {sensor_id}: {e}", exc_info=True)
@@ -791,7 +814,10 @@ class StreamManager:
 
         # Escribir a CSV (archivo separado por sensor)
         accel_writer = self._get_or_create_accel_writer(sensor_id)
-        accel_writer.writerows(records)
+        if accel_writer is not None:
+            accel_writer.writerows(records)
+        else:
+            logger.debug(f"Sensor {sensor_id} not streaming, skipping CSV write for {len(records)} samples")
         
         # Usar solo muestras válidas para el análisis
         if len(valid_samples) == 0:
