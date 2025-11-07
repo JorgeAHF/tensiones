@@ -36,7 +36,39 @@
 
 ## 🔍 Limitaciones de Hardware Identificadas
 
-### Frecuencias de Muestreo en Modo SYNC
+### 1. Formato de Datos en Modo SYNC
+
+**IMPORTANTE:** El G-Link-200 **solo soporta datos calibrados (Float 32-bit)** en modo SYNC.
+
+#### ✅ Formato Soportado
+```
+Float 32-bit (calibrated) - Datos calibrados en unidades de gravedad (g)
+```
+
+#### ❌ Formato NO Soportado
+```
+UInt16 (raw) - Datos sin calibrar en formato entero de 16 bits
+```
+
+**Razón:**
+> El modo SYNC Sampling del G-Link-200 está diseñado para transmitir datos calibrados en tiempo real.
+> El formato raw (uint16) solo está disponible en otros modos de operación (datalog, armed datalog).
+
+**Comportamiento Observado:**
+- Al intentar configurar formato `uint16`, el hardware rechaza la configuración con el error:
+  ```
+  Invalid Configuration: The Data Format is not supported by this Node
+  ```
+- La aplicación ahora fuerza automáticamente el formato Float si se solicita uint16
+
+**Solución Implementada:**
+- Removida la opción UInt16 de la interfaz web
+- Agregada validación que fuerza Float si se solicita uint16
+- Documentación clara sobre esta limitación en la UI
+
+---
+
+### 2. Frecuencias de Muestreo en Modo SYNC
 
 Según la documentación de LORD MicroStrain y las pruebas realizadas:
 
@@ -216,19 +248,22 @@ base_station.protocol(mscl.WirelessTypes.commProtocol_lxrsPlus)
 ### Archivos Modificados
 1. `app/acquisition/real_mscl_client.py`:
    - Líneas 575-637: Eliminada reconfiguración duplicada
-   - Líneas 694-746: Validación de frecuencias
+   - Líneas 731-783: Validación de frecuencias
    - Líneas 164-247: Soporte para sampling modes
+   - Líneas 248-261: Validación de formato de datos (fuerza Float si se solicita uint16)
 
 2. `app/acquisition/stream_manager.py`:
    - Líneas 411-461: Actualizado método `configure()`
 
 3. `app/acquisition/mscl_client.py`:
    - Líneas 63-72: Actualizada firma de `configure_node()` en interfaz
-   - Líneas 121-142: Actualizado `DemoMSCLClient.configure_node()`
-   - Líneas 406-432: Actualizado `HttpMSCLClient.configure_node()`
+   - Líneas 113-134: Actualizado `DemoMSCLClient.configure_node()`
+   - Líneas 383-409: Actualizado `HttpMSCLClient.configure_node()`
 
 4. `app/ui/dash_app.py`:
    - Líneas 1805-1818: Actualizado dropdown de frecuencias en UI
+   - Líneas 610-636: Removida opción UInt16, agregada alerta informativa
+   - Líneas 1832-1839: Formato de datos deshabilitado (solo Float soportado)
 
 ---
 
