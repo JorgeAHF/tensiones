@@ -761,33 +761,41 @@ class StreamManager:
         dt = 1.0 / fs_hz
         start_time = sample.timestamp - len(sample.acceleration_g) * dt
 
-        timestamps = start_time + np.arange(len(sample.acceleration_g)) * dt
+        # Generar timestamps para cada muestra
+        timestamps_epoch = start_time + np.arange(len(sample.acceleration_g)) * dt
+
+        # CRITICAL: Ordenar por timestamp para evitar datos desordenados
+        # Crear array de (timestamp, accel) para ordenar juntos
+        data_with_ts = [(timestamps_epoch[i], sample.acceleration_g[i])
+                        for i in range(len(sample.acceleration_g))]
+        data_with_ts.sort(key=lambda x: x[0])  # Ordenar por timestamp
+
+        timestamps_epoch_sorted = np.array([x[0] for x in data_with_ts])
+        acceleration_sorted = np.array([x[1] for x in data_with_ts])
+
         records = []
         valid_samples = []  # Para análisis: solo muestras válidas
-        rolling_samples = []  # 🎬 Para el RollingRecorder
-        
+
         # Obtener ejes configurados del sensor
         sensor_state = self.sensors.get(sensor_id)
         active_axes = ['x', 'y', 'z']  # Por defecto todos
         if sensor_state and sensor_state.info.axes:
             active_axes = [axis.lower() for axis in sensor_state.info.axes]
-        
-        for idx, accel in enumerate(sample.acceleration_g):
-            epoch = start_time + idx * dt
+
+        for epoch, accel in zip(timestamps_epoch_sorted, acceleration_sorted):
             ts_local_dt = datetime.fromtimestamp(epoch, tz=DEFAULT_TZ)
             ts_utc_dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
             ts_local = format_timestamp(ts_local_dt)
             ts_utc = format_timestamp(ts_utc_dt)
-            
+
             # Para CSV: mantener 3 columnas pero poner NaN en ejes no configurados
             accel_x = accel[0] if 'x' in active_axes else float('nan')
             accel_y = accel[1] if 'y' in active_axes else float('nan')
             accel_z = accel[2] if 'z' in active_axes else float('nan')
-            
+
             # Validar la muestra (datos calibrados en g's)
-            # Rango razonable: -10 a +10 g (caídas libres y impactos fuertes < 10g)
             is_valid = is_valid_acceleration_sample(accel, expected_range=(-10.0, 10.0))
-            
+
             # Guardar en CSV con flag de validez
             records.append(
                 [
@@ -799,10 +807,10 @@ class StreamManager:
                     accel_x,
                     accel_y,
                     accel_z,
-                    is_valid,  # Nueva columna
+                    is_valid,
                 ]
             )
-            
+
             # Solo agregar a valid_samples si pasó validación
             if is_valid:
                 valid_samples.append(accel)
@@ -811,6 +819,7 @@ class StreamManager:
         accel_writer = self._get_or_create_accel_writer(sensor_id)
         if accel_writer is not None:
             accel_writer.writerows(records)
+            logger.debug(f"[CSV] Wrote {len(records)} samples for {sensor_id} at {fs_hz} Hz")
         else:
             logger.debug(f"Sensor {sensor_id} not streaming, skipping CSV write for {len(records)} samples")
         
