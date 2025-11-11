@@ -32,7 +32,7 @@ def check_lxrs_plus():
     # Verificar protocolo actual
     try:
         print("\n2. Verificando protocolo actual...")
-        current_protocol = base_station.protocol()
+        current_protocol = base_station.communicationProtocol()
 
         # Mapear el enum a nombre legible
         if current_protocol == mscl.WirelessTypes.commProtocol_lxrs:
@@ -52,7 +52,7 @@ def check_lxrs_plus():
         print(f"   📊 Throughput máximo: {max_throughput}")
 
     except AttributeError:
-        print("   ❌ El método protocol() no está disponible en esta versión de MSCL")
+        print("   ❌ El método communicationProtocol() no está disponible en esta versión de MSCL")
         return
     except Exception as e:
         print(f"   ❌ Error al verificar protocolo: {e}")
@@ -62,10 +62,10 @@ def check_lxrs_plus():
     if current_protocol != mscl.WirelessTypes.commProtocol_lxrsPlus:
         print("\n3. Intentando habilitar LXRS+...")
         try:
-            base_station.protocol(mscl.WirelessTypes.commProtocol_lxrsPlus)
+            base_station.communicationProtocol(mscl.WirelessTypes.commProtocol_lxrsPlus)
 
             # Verificar el cambio
-            new_protocol = base_station.protocol()
+            new_protocol = base_station.communicationProtocol()
             if new_protocol == mscl.WirelessTypes.commProtocol_lxrsPlus:
                 print("   ✅ LXRS+ habilitado exitosamente!")
                 print("   📊 Nuevo throughput máximo: 16,000 samples/s")

@@ -559,22 +559,38 @@ class RealMSCLClient(MSCLClient):
             # LXRS+: 16,000 samples/s (4x faster than LXRS 4,000 samples/s)
             try:
                 LOGGER.info("Attempting to configure LXRS+ protocol...")
-                # Try to set the communication protocol to LXRS+
-                # WirelessTypes.commProtocol_lxrsPlus for LXRS+
+
+                # First check current protocol
                 try:
-                    self.base_station.protocol(mscl.WirelessTypes.commProtocol_lxrsPlus)
-                    LOGGER.info("✅ LXRS+ protocol enabled! (16,000 samples/s maximum)")
-                except AttributeError:
-                    LOGGER.warning("LXRS+ not available in this MSCL version - using default protocol")
+                    current_protocol = self.base_station.communicationProtocol()
+                    if current_protocol == mscl.WirelessTypes.commProtocol_lxrs:
+                        protocol_name = "LXRS (4,000 samples/s)"
+                    elif current_protocol == mscl.WirelessTypes.commProtocol_lxrsPlus:
+                        protocol_name = "LXRS+ (16,000 samples/s)"
+                    else:
+                        protocol_name = f"Unknown ({current_protocol})"
+
+                    LOGGER.info(f"Current protocol: {protocol_name}")
+
+                    # If not LXRS+, try to set it
+                    if current_protocol != mscl.WirelessTypes.commProtocol_lxrsPlus:
+                        LOGGER.info("Setting protocol to LXRS+...")
+                        self.base_station.communicationProtocol(mscl.WirelessTypes.commProtocol_lxrsPlus)
+
+                        # Verify the change
+                        new_protocol = self.base_station.communicationProtocol()
+                        if new_protocol == mscl.WirelessTypes.commProtocol_lxrsPlus:
+                            LOGGER.info("✅ LXRS+ protocol enabled! (16,000 samples/s maximum)")
+                        else:
+                            LOGGER.warning(f"⚠️  Protocol change failed. Still using: {protocol_name}")
+                    else:
+                        LOGGER.info("✅ LXRS+ already enabled! (16,000 samples/s maximum)")
+
+                except AttributeError as attr_err:
+                    LOGGER.warning(f"communicationProtocol() not available: {attr_err} - using default protocol")
                 except Exception as proto_err:
-                    # If LXRS+ fails, try to verify current protocol
-                    try:
-                        current_protocol = self.base_station.protocol()
-                        protocol_name = "LXRS+" if current_protocol == mscl.WirelessTypes.commProtocol_lxrsPlus else "LXRS"
-                        LOGGER.info(f"Current protocol: {protocol_name}")
-                    except:
-                        pass
-                    LOGGER.warning(f"Could not set LXRS+ protocol: {proto_err}. Using default protocol.")
+                    LOGGER.warning(f"Could not configure LXRS+ protocol: {proto_err}")
+                    LOGGER.warning("WORKAROUND: Configure LXRS+ manually in SensorConnect before running this app")
             except Exception as e:
                 LOGGER.warning(f"Error during protocol configuration: {e}")
 
