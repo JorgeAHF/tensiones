@@ -758,9 +758,10 @@ class RealMSCLClient(MSCLClient):
                             LOGGER.warning(f"Could not parse sample {i}: {parse_err}")
                             continue
                     
-                    # Send accumulated samples in batches (every ~1 second worth of data)
-                    # Dynamically adjust batch size based on sample rate
-                    batch_threshold = max(int(info.sample_rate_hz), 64)  # At least 64 samples, or 1 second of data
+                    # Send accumulated samples in batches (more frequent for better latency)
+                    # Reduced batch size: transmit every 0.5 seconds instead of 1 second
+                    # This reduces buffer accumulation and improves data flow consistency
+                    batch_threshold = max(int(info.sample_rate_hz) // 2, 32)  # At least 32 samples, or 0.5 second of data
                     if len(accumulated_samples) >= batch_threshold:
                         # Create numpy array: shape (num_samples, 3)
                         acc_data = np.array(accumulated_samples, dtype=np.float64)
@@ -777,7 +778,7 @@ class RealMSCLClient(MSCLClient):
                             print(f"📊 VERIFICACIÓN DE FRECUENCIA - Sensor {sensor_id}", file=sys.stderr)
                             print("="*80, file=sys.stderr)
                             print(f"   Frecuencia en info.sample_rate_hz: {info.sample_rate_hz} Hz", file=sys.stderr)
-                            print(f"   Tamaño de batch (1 segundo de datos): {batch_threshold} samples", file=sys.stderr)
+                            print(f"   Tamaño de batch (0.5 segundo de datos): {batch_threshold} samples", file=sys.stderr)
                             print(f"   Samples por batch REAL: {len(accumulated_samples)} samples", file=sys.stderr)
                             if len(accumulated_samples) != batch_threshold:
                                 print(f"   ⚠️  DISCREPANCIA DETECTADA!", file=sys.stderr)

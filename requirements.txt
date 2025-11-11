@@ -4,6 +4,7 @@ plotly==5.18.0
 numpy>=2.2,<2.3
 scipy>=1.15,<1.17
 pandas>=2.2.3,<2.4
+pyarrow>=18.0.0,<19.0  # For Parquet file support
 pyyaml==6.0.1
 python-dotenv>=1.0.0
 pytz==2023.3.post1

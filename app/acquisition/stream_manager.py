@@ -7,7 +7,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Deque, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Deque, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -17,6 +17,7 @@ from app.analysis.filters import BandpassConfig, preprocess
 from app.analysis.spectral import FrequencyEstimator, PeakDetectionResult, WelchConfig
 from app.analysis.tension import TensionResult, estimate_tension
 from app.sinks.csv_writer import RotatingCsvWriter
+from app.sinks.parquet_writer import RotatingParquetWriter
 from app.sinks.rotation import RotationPolicy
 from app.utils.timeutils import DEFAULT_TZ, format_timestamp, now_local_utc
 from app.utils.validators import QualityAssessment, Thresholds
@@ -370,8 +371,15 @@ class StreamManager:
                     logger.warning("Initial discovery failed: %s", exc)
 
         # Crear diccionarios de writers por sensor (para archivos separados)
+        # Determinar formato de almacenamiento desde config (default: CSV)
+        self._storage_format = self.rotation_cfg.get("format", "csv").lower()
+        logger.info(f"[STORAGE] Data format: {self._storage_format.upper()}")
+
+        # Writers por formato
         self._accel_writers: Dict[str, RotatingCsvWriter] = {}
         self._tension_writers: Dict[str, RotatingCsvWriter] = {}
+        self._accel_parquet_writers: Dict[str, RotatingParquetWriter] = {}
+        self._tension_parquet_writers: Dict[str, RotatingParquetWriter] = {}
 
         # Headers para archivos CSV
         self._accel_headers = [
@@ -402,7 +410,7 @@ class StreamManager:
             "qa",
         ]
 
-    def _create_writer(self, subdir: str, prefix: str, headers: List[str]) -> RotatingCsvWriter:
+    def _create_csv_writer(self, subdir: str, prefix: str, headers: List[str]) -> RotatingCsvWriter:
         """Create a RotatingCsvWriter with custom prefix for file naming."""
         policy = RotationPolicy(
             mode=self.rotation_cfg.get("mode", "time"),
@@ -412,8 +420,19 @@ class StreamManager:
         path = self.storage_base / subdir
         return RotatingCsvWriter(path, prefix, headers, policy)
 
-    def _get_or_create_accel_writer(self, sensor_id: str) -> Optional[RotatingCsvWriter]:
-        """Get or create acceleration CSV writer for a specific sensor.
+    def _create_parquet_writer(self, subdir: str, prefix: str, headers: List[str]) -> RotatingParquetWriter:
+        """Create a RotatingParquetWriter with custom prefix for file naming."""
+        policy = RotationPolicy(
+            mode=self.rotation_cfg.get("mode", "time"),
+            minutes=self.rotation_cfg.get("minutes"),
+            max_mb=self.rotation_cfg.get("max_mb"),
+        )
+        path = self.storage_base / subdir
+        compression = self.rotation_cfg.get("compression", "snappy")
+        return RotatingParquetWriter(path, prefix, headers, policy, compression=compression)
+
+    def _get_or_create_accel_writer(self, sensor_id: str) -> Optional[Union[RotatingCsvWriter, RotatingParquetWriter]]:
+        """Get or create acceleration writer (CSV or Parquet) for a specific sensor.
 
         Returns None if sensor is not streaming (prevents creating files after stop).
         """
@@ -424,20 +443,33 @@ class StreamManager:
             # Esto previene crear archivos vacíos después de stop()
             return None
 
-        if sensor_id not in self._accel_writers:
-            # Crear carpeta por sensor: acceleration/sensor_XXXXX/
-            subdir = f"acceleration/sensor_{sensor_id}"
-            prefix = f"sensor_{sensor_id}_acceleration"
-            self._accel_writers[sensor_id] = self._create_writer(
-                subdir,
-                prefix,
-                self._accel_headers
-            )
-            logger.info(f"Created acceleration CSV writer for sensor {sensor_id} in {subdir}/")
-        return self._accel_writers[sensor_id]
+        # Crear writer según formato configurado
+        if self._storage_format == "parquet":
+            if sensor_id not in self._accel_parquet_writers:
+                subdir = f"acceleration/sensor_{sensor_id}"
+                prefix = f"sensor_{sensor_id}_acceleration"
+                self._accel_parquet_writers[sensor_id] = self._create_parquet_writer(
+                    subdir,
+                    prefix,
+                    self._accel_headers
+                )
+                logger.info(f"Created acceleration Parquet writer for sensor {sensor_id} in {subdir}/")
+            return self._accel_parquet_writers[sensor_id]
+        else:  # Default to CSV
+            if sensor_id not in self._accel_writers:
+                # Crear carpeta por sensor: acceleration/sensor_XXXXX/
+                subdir = f"acceleration/sensor_{sensor_id}"
+                prefix = f"sensor_{sensor_id}_acceleration"
+                self._accel_writers[sensor_id] = self._create_csv_writer(
+                    subdir,
+                    prefix,
+                    self._accel_headers
+                )
+                logger.info(f"Created acceleration CSV writer for sensor {sensor_id} in {subdir}/")
+            return self._accel_writers[sensor_id]
 
-    def _get_or_create_tension_writer(self, sensor_id: str) -> Optional[RotatingCsvWriter]:
-        """Get or create tension CSV writer for a specific sensor.
+    def _get_or_create_tension_writer(self, sensor_id: str) -> Optional[Union[RotatingCsvWriter, RotatingParquetWriter]]:
+        """Get or create tension writer (CSV or Parquet) for a specific sensor.
 
         Returns None if sensor is not streaming (prevents creating files after stop).
         """
@@ -448,17 +480,30 @@ class StreamManager:
             # Esto previene crear archivos vacíos después de stop()
             return None
 
-        if sensor_id not in self._tension_writers:
-            # Crear carpeta por sensor: tension/sensor_XXXXX/
-            subdir = f"tension/sensor_{sensor_id}"
-            prefix = f"sensor_{sensor_id}_tension"
-            self._tension_writers[sensor_id] = self._create_writer(
-                subdir,
-                prefix,
-                self._tension_headers
-            )
-            logger.info(f"Created tension CSV writer for sensor {sensor_id} in {subdir}/")
-        return self._tension_writers[sensor_id]
+        # Crear writer según formato configurado
+        if self._storage_format == "parquet":
+            if sensor_id not in self._tension_parquet_writers:
+                subdir = f"tension/sensor_{sensor_id}"
+                prefix = f"sensor_{sensor_id}_tension"
+                self._tension_parquet_writers[sensor_id] = self._create_parquet_writer(
+                    subdir,
+                    prefix,
+                    self._tension_headers
+                )
+                logger.info(f"Created tension Parquet writer for sensor {sensor_id} in {subdir}/")
+            return self._tension_parquet_writers[sensor_id]
+        else:  # Default to CSV
+            if sensor_id not in self._tension_writers:
+                # Crear carpeta por sensor: tension/sensor_XXXXX/
+                subdir = f"tension/sensor_{sensor_id}"
+                prefix = f"sensor_{sensor_id}_tension"
+                self._tension_writers[sensor_id] = self._create_csv_writer(
+                    subdir,
+                    prefix,
+                    self._tension_headers
+                )
+                logger.info(f"Created tension CSV writer for sensor {sensor_id} in {subdir}/")
+            return self._tension_writers[sensor_id]
 
     def _make_bandpass(self) -> BandpassConfig:
         bandpass_cfg = self.analysis_cfg.get("bandpass", [0.2, 10.0])
@@ -904,15 +949,17 @@ class StreamManager:
             if is_valid:
                 valid_samples.append(accel)
 
-        # Escribir a CSV (archivo separado por sensor)
+        # Escribir a archivo (CSV o Parquet según configuración)
         accel_writer = self._get_or_create_accel_writer(sensor_id)
+        format_name = self._storage_format.upper()
+
         if accel_writer is not None:
             accel_writer.writerows(records)
             state.samples_written_total += len(records)
             samples_lost = state.samples_received_total - state.samples_written_total
 
             log_msg = (
-                f"[CSV WRITE] ✅ Wrote {len(records)} samples at {fs_hz} Hz "
+                f"[{format_name} WRITE] ✅ Wrote {len(records)} samples at {fs_hz} Hz "
                 f"(streaming={state.streaming}, total_received={state.samples_received_total}, "
                 f"total_written={state.samples_written_total}, lost={samples_lost})"
             )
@@ -925,7 +972,7 @@ class StreamManager:
             samples_lost = state.samples_received_total - state.samples_written_total
 
             log_msg = (
-                f"[CSV SKIP] ❌ NOT streaming, SKIPPING CSV write for {len(records)} samples "
+                f"[{format_name} SKIP] ❌ NOT streaming, SKIPPING write for {len(records)} samples "
                 f"(streaming={state.streaming}, total_received={state.samples_received_total}, "
                 f"total_written={state.samples_written_total}, lost={samples_lost})"
             )

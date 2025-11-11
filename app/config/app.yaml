@@ -23,6 +23,8 @@ storage:
     max_mb: 100
     minutes: 2
     mode: time
+    format: parquet  # Opciones: csv, parquet (Parquet es 5-10x más pequeño y rápido)
+    compression: snappy  # Solo para Parquet. Opciones: snappy, gzip, brotli
 timezone: America/Mexico_City
 ui:
   history_hours: 1
