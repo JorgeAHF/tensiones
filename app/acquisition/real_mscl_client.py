@@ -555,44 +555,37 @@ class RealMSCLClient(MSCLClient):
             except Exception as e:
                 LOGGER.warning(f"Could not enable lossless mode: {e}")
 
-            # PASO 3.2: Try to enable LXRS+ protocol for higher throughput
+            # PASO 3.2: Verify LXRS+ protocol is enabled
             # LXRS+: 16,000 samples/s (4x faster than LXRS 4,000 samples/s)
+            # NOTE: Protocol must be configured manually in SensorConnect or via firmware
             try:
-                LOGGER.info("Attempting to configure LXRS+ protocol...")
+                LOGGER.info("Checking communication protocol...")
 
-                # First check current protocol
                 try:
                     current_protocol = self.base_station.communicationProtocol()
                     if current_protocol == mscl.WirelessTypes.commProtocol_lxrs:
                         protocol_name = "LXRS (4,000 samples/s)"
+                        LOGGER.warning("⚠️  Protocol is LXRS - For high frequencies (>256 Hz), configure LXRS+ in SensorConnect")
+                        LOGGER.warning("   LXRS limits:")
+                        LOGGER.warning("   - 512 Hz:  Only ~60% of data will be received")
+                        LOGGER.warning("   - 1024 Hz: Only ~50% of data will be received")
+                        LOGGER.warning("   To fix: Open SensorConnect → BaseStation Options → Protocol → LXRS+")
                     elif current_protocol == mscl.WirelessTypes.commProtocol_lxrsPlus:
                         protocol_name = "LXRS+ (16,000 samples/s)"
+                        LOGGER.info("✅ LXRS+ is enabled! High frequencies (512-1024 Hz) should work correctly")
                     else:
                         protocol_name = f"Unknown ({current_protocol})"
+                        LOGGER.warning(f"Unknown protocol: {current_protocol}")
 
-                    LOGGER.info(f"Current protocol: {protocol_name}")
-
-                    # If not LXRS+, try to set it
-                    if current_protocol != mscl.WirelessTypes.commProtocol_lxrsPlus:
-                        LOGGER.info("Setting protocol to LXRS+...")
-                        self.base_station.communicationProtocol(mscl.WirelessTypes.commProtocol_lxrsPlus)
-
-                        # Verify the change
-                        new_protocol = self.base_station.communicationProtocol()
-                        if new_protocol == mscl.WirelessTypes.commProtocol_lxrsPlus:
-                            LOGGER.info("✅ LXRS+ protocol enabled! (16,000 samples/s maximum)")
-                        else:
-                            LOGGER.warning(f"⚠️  Protocol change failed. Still using: {protocol_name}")
-                    else:
-                        LOGGER.info("✅ LXRS+ already enabled! (16,000 samples/s maximum)")
+                    LOGGER.info(f"Current BaseStation protocol: {protocol_name}")
 
                 except AttributeError as attr_err:
-                    LOGGER.warning(f"communicationProtocol() not available: {attr_err} - using default protocol")
+                    LOGGER.warning(f"communicationProtocol() not available: {attr_err}")
+                    LOGGER.warning("Cannot verify protocol - assuming default LXRS")
                 except Exception as proto_err:
-                    LOGGER.warning(f"Could not configure LXRS+ protocol: {proto_err}")
-                    LOGGER.warning("WORKAROUND: Configure LXRS+ manually in SensorConnect before running this app")
+                    LOGGER.warning(f"Error checking protocol: {proto_err}")
             except Exception as e:
-                LOGGER.warning(f"Error during protocol configuration: {e}")
+                LOGGER.warning(f"Error during protocol verification: {e}")
 
             # PASO 3.5: Configure retransmission on each node
             # Esto asegura que el modo lossless funcione correctamente
