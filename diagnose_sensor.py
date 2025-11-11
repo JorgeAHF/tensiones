@@ -22,12 +22,18 @@ def diagnose_sensor(node_address: int, host: str = "192.168.8.101", port: int = 
         print(f"\n[2] Creando nodo {node_address}...")
         node = mscl.WirelessNode(node_address, base_station)
 
-        # Verificar comunicación
+        # Verificar comunicación (ping)
         print(f"\n[3] Verificando comunicación...")
-        if not node.hasLinkAddress(base_station.address()):
-            print("❌ El nodo no puede comunicarse con la base station")
-            return
-        print("✅ Comunicación OK")
+        try:
+            ping_response = node.ping()
+            if ping_response.success():
+                print(f"✅ Comunicación OK (RSSI: {ping_response.rssi()} dBm)")
+            else:
+                print("❌ El nodo no respondió al ping")
+                return
+        except Exception as e:
+            print(f"⚠️  No se pudo hacer ping, continuando... ({e})")
+            # Continuar de todas formas
 
         # Leer configuración actual
         print(f"\n[4] Leyendo configuración actual del nodo...")
