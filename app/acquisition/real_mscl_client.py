@@ -555,6 +555,29 @@ class RealMSCLClient(MSCLClient):
             except Exception as e:
                 LOGGER.warning(f"Could not enable lossless mode: {e}")
 
+            # PASO 3.2: Try to enable LXRS+ protocol for higher throughput
+            # LXRS+: 16,000 samples/s (4x faster than LXRS 4,000 samples/s)
+            try:
+                LOGGER.info("Attempting to configure LXRS+ protocol...")
+                # Try to set the communication protocol to LXRS+
+                # WirelessTypes.commProtocol_lxrsPlus for LXRS+
+                try:
+                    self.base_station.protocol(mscl.WirelessTypes.commProtocol_lxrsPlus)
+                    LOGGER.info("✅ LXRS+ protocol enabled! (16,000 samples/s maximum)")
+                except AttributeError:
+                    LOGGER.warning("LXRS+ not available in this MSCL version - using default protocol")
+                except Exception as proto_err:
+                    # If LXRS+ fails, try to verify current protocol
+                    try:
+                        current_protocol = self.base_station.protocol()
+                        protocol_name = "LXRS+" if current_protocol == mscl.WirelessTypes.commProtocol_lxrsPlus else "LXRS"
+                        LOGGER.info(f"Current protocol: {protocol_name}")
+                    except:
+                        pass
+                    LOGGER.warning(f"Could not set LXRS+ protocol: {proto_err}. Using default protocol.")
+            except Exception as e:
+                LOGGER.warning(f"Error during protocol configuration: {e}")
+
             # PASO 3.5: Configure retransmission on each node
             # Esto asegura que el modo lossless funcione correctamente
             try:
