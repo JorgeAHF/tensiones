@@ -323,7 +323,17 @@ class RealMSCLClient(MSCLClient):
                 channels.enable(mscl.WirelessChannel.channel_3)  # Z
             node_config.activeChannels(channels)
             LOGGER.info(f"Enabled channels: {axes}")
-            
+
+            # PASO 4.5: Configurar modo de transmisión (defaultMode)
+            # CRÍTICO para evitar que el sensor entre en modo datalogging durante gaps
+            try:
+                node_config.defaultMode(mscl.WirelessTypes.defaultMode_sync)
+                LOGGER.info("Default mode: SYNC (continuous real-time transmission)")
+            except AttributeError:
+                LOGGER.warning("Node API does not support defaultMode - using default behavior")
+            except Exception as e:
+                LOGGER.warning(f"Could not set defaultMode: {e}")
+
             # PASO 5: Formato de datos
             # IMPORTANTE: G-Link-200 en modo SYNC solo soporta datos calibrados (float)
             # El formato raw (uint16) NO está soportado en modo SYNC
@@ -545,6 +555,29 @@ class RealMSCLClient(MSCLClient):
             except Exception as e:
                 LOGGER.warning(f"Could not enable lossless mode: {e}")
 
+            # PASO 3.5: Configure retransmission on each node
+            # Esto asegura que el modo lossless funcione correctamente
+            try:
+                LOGGER.info("Configuring retransmission for each node...")
+                for sensor_id in sensor_ids:
+                    node = self.nodes.get(sensor_id)
+                    if node is None:
+                        continue
+
+                    try:
+                        node_config = node.getConfig()
+                        node_config.retransmit(mscl.WirelessTypes.retransmission_on)
+                        node.applyConfig(node_config)
+                        LOGGER.info(f"Retransmission enabled for node {sensor_id}")
+                    except AttributeError:
+                        LOGGER.warning(f"Node {sensor_id} API does not support retransmit setting")
+                    except Exception as node_err:
+                        LOGGER.warning(f"Could not configure retransmission for node {sensor_id}: {node_err}")
+
+                LOGGER.info("Retransmission configuration completed")
+            except Exception as e:
+                LOGGER.warning(f"Error during retransmission configuration: {e}")
+
             # PASO 4: Apply configuration
             LOGGER.info("Applying sync network configuration...")
             self._sync_network.applyConfiguration()
@@ -604,8 +637,9 @@ class RealMSCLClient(MSCLClient):
                     LOGGER.info(f"Stream loop iteration #{loop_iterations} - Still receiving data...")
                 
                 # Get data from base station
+                # Timeout aumentado a 2000ms para manejar mejor ráfagas grandes a alta frecuencia
                 LOGGER.debug(f"Calling getData() - iteration #{loop_iterations}")
-                sweeps = self.base_station.getData(500)  # 500ms timeout
+                sweeps = self.base_station.getData(2000)  # 2000ms timeout (antes 500ms)
                 LOGGER.debug(f"getData() returned {len(sweeps)} sweeps")
                 
                 # Check if we're receiving data
