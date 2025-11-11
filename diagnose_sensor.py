@@ -27,7 +27,13 @@ def diagnose_sensor(node_address: int, host: str = "192.168.8.101", port: int = 
         try:
             ping_response = node.ping()
             if ping_response.success():
-                print(f"✅ Comunicación OK (RSSI: {ping_response.rssi()} dBm)")
+                print(f"✅ Comunicación OK")
+                # Intentar obtener RSSI si está disponible
+                try:
+                    rssi = ping_response.nodeRSSI()
+                    print(f"   RSSI del nodo: {rssi} dBm")
+                except:
+                    pass
             else:
                 print("❌ El nodo no respondió al ping")
                 return
@@ -63,17 +69,81 @@ def diagnose_sensor(node_address: int, host: str = "192.168.8.101", port: int = 
 
         # Channels activos
         channels = node.getActiveChannels()
-        print(f"   Canales activos: {channels}")
+        channel_list = []
+        if channels.enabled(1):  # X
+            channel_list.append("X")
+        if channels.enabled(2):  # Y
+            channel_list.append("Y")
+        if channels.enabled(3):  # Z
+            channel_list.append("Z")
+        print(f"   Canales activos: {', '.join(channel_list) if channel_list else 'Ninguno'}")
 
         # Data format
         data_format = node.getDataFormat()
-        print(f"   Formato de datos: {data_format}")
+        format_map = {
+            2: "Float 32-bit (calibrado)",
+            1: "UInt16 (raw)",
+        }
+        format_str = format_map.get(data_format, f"Desconocido ({data_format})")
+        print(f"   Formato de datos: {format_str}")
 
         # Duration
-        unlimited = node.unlimitedDuration()
-        print(f"   Duración ilimitada: {unlimited}")
+        unlimited = node.getUnlimitedDuration()
+        print(f"   Duración ilimitada: {'Sí' if unlimited else 'No'}")
 
-        print(f"\n[5] Diagnóstico completo\n")
+        # Información adicional de radio/comunicación
+        print(f"\n[5] Diagnóstico de comunicación...")
+        try:
+            # Protocol
+            protocol = base_station.protocol()
+            protocol_map = {
+                1: "LXRS (4,000 samples/s por canal)",
+                2: "LXRS+ (16,000 samples/s por canal)",
+            }
+            protocol_str = protocol_map.get(protocol, f"Desconocido ({protocol})")
+            print(f"   Protocol de base station: {protocol_str}")
+
+            # Transmit power
+            try:
+                tx_power = node.getTransmitPower()
+                print(f"   Potencia de transmisión: {tx_power} dBm")
+            except:
+                pass
+
+            # Radio frequency
+            try:
+                frequency = base_station.frequency()
+                print(f"   Frecuencia de radio: {frequency}")
+            except:
+                pass
+
+        except Exception as e:
+            print(f"   ⚠️  No se pudo obtener info de comunicación: {e}")
+
+        print(f"\n[6] Resumen del diagnóstico")
+        print(f"   {'='*50}")
+        print(f"   Configuración del sensor {node_address}:")
+        print(f"   - Frecuencia: {current_hz} Hz")
+        print(f"   - Canales: {', '.join(channel_list) if channel_list else 'Ninguno'}")
+        print(f"   - Formato: {format_str}")
+        print(f"   - Duración: {'Ilimitada' if unlimited else 'Limitada'}")
+
+        # Calcular throughput esperado
+        if isinstance(current_hz, int):
+            samples_per_sec = current_hz * len(channel_list)
+            bytes_per_sec = samples_per_sec * 4  # Float32 = 4 bytes
+            print(f"\n   Throughput esperado:")
+            print(f"   - {samples_per_sec} samples/s")
+            print(f"   - {bytes_per_sec} bytes/s ({bytes_per_sec/1024:.2f} KB/s)")
+
+            # Verificar si excede límites de LXRS
+            if samples_per_sec > 4000:
+                print(f"   ⚠️  ADVERTENCIA: Excede límite de LXRS (4,000 samples/s)")
+                print(f"   ➜  Requiere LXRS+ protocol")
+
+        print(f"   {'='*50}\n")
+
+        print(f"\n[7] Diagnóstico completo\n")
 
         return node, base_station
 
