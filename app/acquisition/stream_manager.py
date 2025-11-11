@@ -81,6 +81,8 @@ class SensorState:
     last_sample_timestamp: Optional[float] = None
     estimated_fs: Optional[float] = None
     battery_percent: Optional[float] = None
+    samples_received_total: int = 0  # Total samples received from hardware
+    samples_written_total: int = 0   # Total samples written to CSV
 
 
 @dataclass
@@ -553,9 +555,13 @@ class StreamManager:
 
         try:
             import traceback
+            # Resetear contadores de samples al iniciar nuevo stream
+            state.samples_received_total = 0
+            state.samples_written_total = 0
             logger.info(f"[STREAM_MANAGER] Calling start_streaming for {sensor_id}...")
             self.client.start_streaming(sensor_id, callback)
             state.streaming = True
+            logger.info(f"[STATE CHANGE] 🟢 Sensor {sensor_id} streaming state: False → True (counters reset)")
             logger.info(f"[STREAM_MANAGER] start_streaming completed for {sensor_id}")
         except Exception as e:
             error_detail = traceback.format_exc()
@@ -579,12 +585,13 @@ class StreamManager:
         self.client.stop_streaming(sensor_id)
         state = self.sensors.get(sensor_id)
         if state:
+            logger.info(f"[STATE CHANGE] 🔴 Sensor {sensor_id} streaming state: True → False")
             state.streaming = False
 
         # Limpiar writers del sensor para forzar creación de nuevos archivos en próximo start
         self._accel_writers.pop(sensor_id, None)
         self._tension_writers.pop(sensor_id, None)
-        logger.info(f"CSV writers cleared for sensor {sensor_id} - new files will be created on next start")
+        logger.info(f"[CSV CLEANUP] CSV writers cleared for sensor {sensor_id} - new files will be created on next start")
 
     def start_all(self) -> None:
         for sensor_id in self.stays:
@@ -750,11 +757,15 @@ class StreamManager:
             logger.error(f"Error procesando FFT para sensor {sensor_id}: {e}", exc_info=True)
 
     def _handle_sample(self, sensor_id: str, sample: Sample) -> None:
-        logger.info(f"_handle_sample called for {sensor_id}: {len(sample.acceleration_g)} samples")
+        num_samples = len(sample.acceleration_g)
+        logger.info(f"_handle_sample called for {sensor_id}: {num_samples} samples")
         stay = self.stays[sensor_id]
         state = self.sensors[sensor_id]
         state.last_sample_timestamp = sample.timestamp
         state.estimated_fs = sample.fs_hz
+
+        # Incrementar contador de samples recibidos
+        state.samples_received_total += num_samples
 
         # Conversión defensiva: asegurar que fs_hz sea float
         fs_hz = float(sample.fs_hz) if isinstance(sample.fs_hz, str) else sample.fs_hz
@@ -819,9 +830,20 @@ class StreamManager:
         accel_writer = self._get_or_create_accel_writer(sensor_id)
         if accel_writer is not None:
             accel_writer.writerows(records)
-            logger.debug(f"[CSV] Wrote {len(records)} samples for {sensor_id} at {fs_hz} Hz")
+            state.samples_written_total += len(records)
+            samples_lost = state.samples_received_total - state.samples_written_total
+            logger.info(
+                f"[CSV WRITE] ✅ Wrote {len(records)} samples for {sensor_id} at {fs_hz} Hz "
+                f"(streaming={state.streaming}, total_received={state.samples_received_total}, "
+                f"total_written={state.samples_written_total}, lost={samples_lost})"
+            )
         else:
-            logger.debug(f"Sensor {sensor_id} not streaming, skipping CSV write for {len(records)} samples")
+            samples_lost = state.samples_received_total - state.samples_written_total
+            logger.warning(
+                f"[CSV SKIP] ❌ Sensor {sensor_id} not streaming, SKIPPING CSV write for {len(records)} samples "
+                f"(streaming={state.streaming}, total_received={state.samples_received_total}, "
+                f"total_written={state.samples_written_total}, lost={samples_lost})"
+            )
         
         # Usar solo muestras válidas para el análisis
         if len(valid_samples) == 0:
@@ -935,9 +957,12 @@ class StreamManager:
         return self._gateway_status
 
     def disconnect_gateway(self) -> GatewayStatus:
+        logger.info("[STATE CHANGE] 🔴 Disconnecting gateway - setting ALL sensors streaming to False")
         status = self.client.disconnect_gateway()
         self._gateway_status = status
-        for state in self.sensors.values():
+        for sensor_id, state in self.sensors.items():
+            if state.streaming:
+                logger.info(f"[STATE CHANGE] 🔴 Sensor {sensor_id} streaming state: True → False (gateway disconnect)")
             state.streaming = False
         return status
 

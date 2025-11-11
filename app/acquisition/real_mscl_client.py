@@ -624,13 +624,12 @@ class RealMSCLClient(MSCLClient):
                 for sweep in sweeps:
                     if sweep.nodeAddress() != node_addr_int:
                         continue
-                    
-                    samples_received += 1
-                    
-                    # NUEVO: Registrar timestamp para detector de frecuencia
+
+                    samples_received += 1  # This counts sweeps, not individual samples
+
+                    # Get current time for frequency reporting (do NOT add to freq_detector here)
                     current_time = time.time()
-                    freq_detector.add_sample(current_time)
-                    
+
                     # Reportar frecuencia medida cada 10 segundos
                     if current_time - last_freq_report > 10.0:
                         measured_freq = freq_detector.get_frequency()
@@ -671,6 +670,11 @@ class RealMSCLClient(MSCLClient):
                         num_channels = 3  # Fallback por seguridad
 
                     num_samples = len(data) // num_channels
+
+                    # Calculate time delta between samples for frequency detection
+                    # Conversión defensiva: asegurar que sample_rate_hz sea float
+                    configured_rate = float(info.sample_rate_hz)
+                    sample_dt = 1.0 / configured_rate if configured_rate > 0 else 0.001
                     
                     if samples_received % 100 == 1:  # Log every 100th sweep
                         LOGGER.info(f"Received sweep #{samples_received} from node {sensor_id}: {num_samples} samples, accumulated: {len(accumulated_samples)}")
@@ -710,6 +714,11 @@ class RealMSCLClient(MSCLClient):
                                     z = channel_values[idx]
 
                             accumulated_samples.append([x, y, z])
+
+                            # Add timestamp for THIS individual sample to frequency detector
+                            # Calculate sample's timestamp: base timestamp + sample index * dt
+                            sample_timestamp = timestamp + (i * sample_dt)
+                            freq_detector.add_sample(sample_timestamp)
 
                         except Exception as parse_err:
                             LOGGER.warning(f"Could not parse sample {i}: {parse_err}")
