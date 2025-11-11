@@ -24,6 +24,52 @@ from app.utils.validators import QualityAssessment, Thresholds
 logger = logging.getLogger(__name__)
 
 
+def create_session_logger(sensor_id: str, base_dir: Path) -> logging.Logger:
+    """
+    Crea un logger dedicado para una sesión de monitoreo específica.
+    Escribe a un archivo separado: data/logs/sessions/session_{sensor_id}_{timestamp}.log
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    # Crear directorio de sesiones si no existe
+    sessions_dir = base_dir / "logs" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generar nombre de archivo con timestamp
+    cst_tz = ZoneInfo("America/Mexico_City")
+    timestamp = datetime.now(cst_tz).strftime("%Y%m%d_%H%M%S")
+    log_filename = f"session_{sensor_id}_{timestamp}.log"
+    log_path = sessions_dir / log_filename
+
+    # Crear logger único para esta sesión
+    session_logger = logging.getLogger(f"session.{sensor_id}.{timestamp}")
+    session_logger.setLevel(logging.DEBUG)
+    session_logger.propagate = False  # No propagar al logger principal
+
+    # Remover handlers existentes (por si se llama múltiples veces)
+    session_logger.handlers.clear()
+
+    # Crear file handler
+    file_handler = logging.FileHandler(log_path, mode='w', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+
+    # Formato simple y claro
+    formatter = logging.Formatter('%(asctime)s | %(levelname)-8s | %(message)s')
+    file_handler.setFormatter(formatter)
+
+    session_logger.addHandler(file_handler)
+
+    # Log inicial
+    session_logger.info("="*80)
+    session_logger.info(f"SESIÓN DE MONITOREO INICIADA - Sensor {sensor_id}")
+    session_logger.info(f"Log file: {log_path}")
+    session_logger.info("="*80)
+    session_logger.info("")
+
+    return session_logger
+
+
 def is_valid_acceleration_sample(accel_values: np.ndarray, expected_range: tuple = (-10.0, 10.0)) -> bool:
     """
     Valida si una muestra de aceleración es confiable.
@@ -83,6 +129,7 @@ class SensorState:
     battery_percent: Optional[float] = None
     samples_received_total: int = 0  # Total samples received from hardware
     samples_written_total: int = 0   # Total samples written to CSV
+    session_logger: Optional[logging.Logger] = None  # Logger dedicado para esta sesión
 
 
 @dataclass
@@ -558,10 +605,19 @@ class StreamManager:
             # Resetear contadores de samples al iniciar nuevo stream
             state.samples_received_total = 0
             state.samples_written_total = 0
+
+            # Crear logger dedicado para esta sesión
+            state.session_logger = create_session_logger(sensor_id, self.storage_base)
+            state.session_logger.info(f"Iniciando streaming para sensor {sensor_id}")
+            state.session_logger.info(f"Frecuencia configurada: {state.info.sample_rate_hz} Hz")
+            state.session_logger.info(f"Ejes activos: {state.info.axes}")
+            state.session_logger.info("")
+
             logger.info(f"[STREAM_MANAGER] Calling start_streaming for {sensor_id}...")
             self.client.start_streaming(sensor_id, callback)
             state.streaming = True
             logger.info(f"[STATE CHANGE] 🟢 Sensor {sensor_id} streaming state: False → True (counters reset)")
+            state.session_logger.info(f"[STATE CHANGE] 🟢 Streaming activado (streaming=True)")
             logger.info(f"[STREAM_MANAGER] start_streaming completed for {sensor_id}")
         except Exception as e:
             error_detail = traceback.format_exc()
@@ -586,6 +642,28 @@ class StreamManager:
         state = self.sensors.get(sensor_id)
         if state:
             logger.info(f"[STATE CHANGE] 🔴 Sensor {sensor_id} streaming state: True → False")
+
+            # Loggear estadísticas finales en session_logger si existe
+            if state.session_logger:
+                samples_lost = state.samples_received_total - state.samples_written_total
+                loss_percent = (samples_lost / state.samples_received_total * 100) if state.samples_received_total > 0 else 0
+
+                state.session_logger.info("")
+                state.session_logger.info("="*80)
+                state.session_logger.info("SESIÓN DE MONITOREO FINALIZADA")
+                state.session_logger.info("="*80)
+                state.session_logger.info(f"[STATE CHANGE] 🔴 Streaming desactivado (streaming=False)")
+                state.session_logger.info(f"Total samples recibidos:  {state.samples_received_total:,}")
+                state.session_logger.info(f"Total samples escritos:   {state.samples_written_total:,}")
+                state.session_logger.info(f"Samples perdidos:         {samples_lost:,} ({loss_percent:.2f}%)")
+                state.session_logger.info("="*80)
+
+                # Cerrar session_logger
+                for handler in state.session_logger.handlers[:]:
+                    handler.close()
+                    state.session_logger.removeHandler(handler)
+                state.session_logger = None
+
             state.streaming = False
 
         # Limpiar writers del sensor para forzar creación de nuevos archivos en próximo start
@@ -832,18 +910,30 @@ class StreamManager:
             accel_writer.writerows(records)
             state.samples_written_total += len(records)
             samples_lost = state.samples_received_total - state.samples_written_total
-            logger.info(
-                f"[CSV WRITE] ✅ Wrote {len(records)} samples for {sensor_id} at {fs_hz} Hz "
+
+            log_msg = (
+                f"[CSV WRITE] ✅ Wrote {len(records)} samples at {fs_hz} Hz "
                 f"(streaming={state.streaming}, total_received={state.samples_received_total}, "
                 f"total_written={state.samples_written_total}, lost={samples_lost})"
             )
+            logger.info(log_msg)
+
+            # También loggear en session_logger si existe
+            if state.session_logger:
+                state.session_logger.info(log_msg)
         else:
             samples_lost = state.samples_received_total - state.samples_written_total
-            logger.warning(
-                f"[CSV SKIP] ❌ Sensor {sensor_id} not streaming, SKIPPING CSV write for {len(records)} samples "
+
+            log_msg = (
+                f"[CSV SKIP] ❌ NOT streaming, SKIPPING CSV write for {len(records)} samples "
                 f"(streaming={state.streaming}, total_received={state.samples_received_total}, "
                 f"total_written={state.samples_written_total}, lost={samples_lost})"
             )
+            logger.warning(log_msg)
+
+            # También loggear en session_logger si existe
+            if state.session_logger:
+                state.session_logger.warning(log_msg)
         
         # Usar solo muestras válidas para el análisis
         if len(valid_samples) == 0:
