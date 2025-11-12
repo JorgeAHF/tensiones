@@ -54,6 +54,7 @@ def create_client(
     stays: List[StayDefinition],
     streaming_coordinator: StreamingCoordinator,
     raw_writer: Optional[RawStreamingWriter],
+    use_datalogging: bool = False,
 ) -> MSCLClient:
     default_fs = float(app_config.get("default_fs_hz", 256))
     demo_mode = app_config.get("modes", {}).get("demo", True)
@@ -67,26 +68,27 @@ def create_client(
         # Por ahora retornamos demo sin coordinator (se eliminará después)
         return create_demo_client(stays_config, default_fs)
     else:
-        LOGGER.info("Connecting to real MSCL Gateway at 192.168.8.101:5000")
+        mode_str = "DATALOGGING" if use_datalogging else "REAL-TIME"
+        LOGGER.info(f"Connecting to real MSCL Gateway at 192.168.8.101:5000 ({mode_str} mode)")
         try:
             import mscl  # Importar solo si se usa el cliente real
             from app.acquisition.real_mscl_client import RealMSCLClient
-            
+
             connection = mscl.Connection.TcpIp("192.168.8.101", 5000)
             base_station = mscl.BaseStation(connection)
-            
+
             # Ping para verificar conexión
             if base_station.ping():
                 LOGGER.info("Successfully connected to BaseStation")
             else:
                 LOGGER.error("BaseStation ping failed")
-            
+
             # Crear configuración de sensores
             sensor_configs = [
-                {"sensor_id": stay.sensor_id, "stay_id": stay.stay_id} 
+                {"sensor_id": stay.sensor_id, "stay_id": stay.stay_id}
                 for stay in stays
             ]
-            
+
             # Crear y retornar cliente real CON streaming coordinator
             return RealMSCLClient(
                 base_station,
@@ -94,6 +96,7 @@ def create_client(
                 default_fs,
                 streaming_coordinator=streaming_coordinator,
                 raw_writer=raw_writer,
+                use_datalogging=use_datalogging,
             )
             
         except Exception as e:
@@ -117,6 +120,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8050)
+    parser.add_argument(
+        "--datalogging",
+        action="store_true",
+        help="Enable datalogging mode (data stored in sensor memory, downloaded when stopped)",
+    )
     return parser.parse_args()
 
 
@@ -155,7 +163,13 @@ def main() -> None:
         except Exception as exc:
             LOGGER.warning("[RAW] No se pudo inicializar RawStreamingWriter: %s", exc)
 
-    client = create_client(app_config, stays, streaming_coordinator, raw_writer=raw_writer)
+    client = create_client(
+        app_config,
+        stays,
+        streaming_coordinator,
+        raw_writer=raw_writer,
+        use_datalogging=args.datalogging,
+    )
 
     ui_cfg = app_config.get("ui", {})
     display_buffer_seconds = int(

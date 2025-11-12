@@ -44,18 +44,20 @@ class RealMSCLClient(MSCLClient):
     """Wrapper for real MSCL BaseStation and WirelessNodes."""
     
     def __init__(
-        self, 
-        base_station: mscl.BaseStation, 
-        sensor_configs: List[Dict[str, Any]], 
+        self,
+        base_station: mscl.BaseStation,
+        sensor_configs: List[Dict[str, Any]],
         default_fs: float,
         streaming_coordinator: Optional[StreamingCoordinator] = None,
         raw_writer: Optional[RawStreamingWriter] = None,
+        use_datalogging: bool = False,
     ):
         self.base_station = base_station
         self.sensor_configs = sensor_configs
         self.default_fs = default_fs
         self.streaming_coordinator = streaming_coordinator
         self.raw_writer = raw_writer
+        self.use_datalogging = use_datalogging
         self.nodes = {}
         self._sensors = {}  # Dict[str, SensorInfo]
         self._threads: Dict[str, threading.Thread] = {}
@@ -64,10 +66,18 @@ class RealMSCLClient(MSCLClient):
         self._sync_network = None  # Will hold SyncSamplingNetwork
         self._sync_network_started = False
         self._gateway_status = GatewayStatus(host="192.168.8.101", port=5000, connected=True, message="Connected to real MSCL Gateway")
-        
+        self._datalogging_sessions = {}  # Dict[sensor_id, start_time] for datalogging
+
+        if self.use_datalogging:
+            LOGGER.info("=" * 80)
+            LOGGER.info("DATALOGGING MODE ENABLED")
+            LOGGER.info("Data will be logged to sensor memory and downloaded when stopped")
+            LOGGER.info("Real-time graphs will NOT be available during monitoring")
+            LOGGER.info("=" * 80)
+
         if self.streaming_coordinator:
             LOGGER.info("[OK] RealMSCLClient integrado con StreamingCoordinator")
-        
+
         self._initialize_nodes()
     
     def _initialize_nodes(self):
@@ -278,9 +288,13 @@ class RealMSCLClient(MSCLClient):
             LOGGER.info(f"Creating WirelessNodeConfig for sensor {sensor_id}")
             node_config = mscl.WirelessNodeConfig()
 
-            # PASO 1: Configurar modo de muestreo sincronizado
-            node_config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
-            LOGGER.info("Set sampling mode: SYNC")
+            # PASO 1: Configurar modo de muestreo (SYNC o DATALOGGING)
+            if self.use_datalogging:
+                node_config.samplingMode(mscl.WirelessTypes.samplingMode_armedDatalog)
+                LOGGER.info("Set sampling mode: ARMED DATALOGGING (data stored in sensor memory)")
+            else:
+                node_config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
+                LOGGER.info("Set sampling mode: SYNC (real-time transmission)")
 
             # PASO 2: Convertir Hz a enum de MSCL
             rate_enum = self._hz_to_sample_rate_enum(sample_rate_hz)
@@ -455,17 +469,226 @@ class RealMSCLClient(MSCLClient):
         if sensor_id not in self._threads:
             LOGGER.warning(f"Sensor {sensor_id} not streaming")
             return
-        
+
         # Signal thread to stop
         self._stops[sensor_id].set()
         self._threads[sensor_id].join(timeout=2.0)
-        
+
         # Cleanup
         del self._threads[sensor_id]
         del self._stops[sensor_id]
         del self._callbacks[sensor_id]
 
         LOGGER.info(f"Stopped streaming for sensor {sensor_id}")
+
+        # DATALOGGING MODE: Download data automatically after stopping
+        if self.use_datalogging and sensor_id in self._datalogging_sessions:
+            LOGGER.info("=" * 80)
+            LOGGER.info(f"DATALOGGING MODE: Downloading data from sensor {sensor_id}...")
+            LOGGER.info("=" * 80)
+
+            try:
+                self._download_and_process_datalog(sensor_id)
+            except Exception as e:
+                LOGGER.error(f"Failed to download datalog from sensor {sensor_id}: {e}")
+                import traceback
+                LOGGER.error(traceback.format_exc())
+
+    def _download_and_process_datalog(self, sensor_id: str) -> None:
+        """Download datalog from sensor and generate CSV files in 2-minute chunks.
+
+        Args:
+            sensor_id: ID of the sensor to download from
+        """
+        import pandas as pd
+        from pathlib import Path
+
+        node = self.nodes.get(sensor_id)
+        if not node:
+            LOGGER.error(f"Node {sensor_id} not found")
+            return
+
+        info = self._sensors.get(sensor_id)
+        if not info:
+            LOGGER.error(f"Sensor info for {sensor_id} not found")
+            return
+
+        try:
+            # Step 1: Stop the datalogging session
+            LOGGER.info(f"Stopping datalogging on node {sensor_id}...")
+            node.setToIdle()
+            time.sleep(1.0)  # Give node time to stop
+            LOGGER.info("Datalogging stopped")
+
+            # Step 2: Get datalog session info
+            LOGGER.info("Getting datalog session info...")
+            sessions = node.getDatalogSessionInfos()
+            if not sessions or len(sessions) == 0:
+                LOGGER.warning(f"No datalog sessions found on node {sensor_id}")
+                return
+
+            LOGGER.info(f"Found {len(sessions)} datalog session(s)")
+
+            # Step 3: Download data from the most recent session
+            session = sessions[-1]  # Get last session
+            session_index = len(sessions) - 1
+
+            LOGGER.info(f"Downloading session #{session_index}...")
+            LOGGER.info(f"Session start time: {session.startTime()}")
+            LOGGER.info(f"Session trigger: {session.trigger()}")
+
+            # Download all data
+            LOGGER.info("Downloading datalog data... (this may take several minutes)")
+            data_sweeps = node.getDatalogData(session_index)
+            LOGGER.info(f"Downloaded {len(data_sweeps)} data sweeps")
+
+            if len(data_sweeps) == 0:
+                LOGGER.warning("No data in datalog session")
+                return
+
+            # Step 4: Process data and create 2-minute CSV files
+            LOGGER.info("Processing downloaded data...")
+            self._process_datalog_to_csvs(sensor_id, data_sweeps, info)
+
+            LOGGER.info("=" * 80)
+            LOGGER.info("DATALOG DOWNLOAD AND PROCESSING COMPLETED")
+            LOGGER.info("=" * 80)
+
+        except Exception as e:
+            LOGGER.error(f"Error downloading datalog: {e}")
+            import traceback
+            LOGGER.error(traceback.format_exc())
+            raise
+
+    def _process_datalog_to_csvs(
+        self,
+        sensor_id: str,
+        data_sweeps: 'mscl.DataSweeps',
+        sensor_info: SensorInfo
+    ) -> None:
+        """Process downloaded datalog sweeps and generate CSV files in 2-minute chunks.
+
+        Args:
+            sensor_id: Sensor ID
+            data_sweeps: Downloaded data sweeps from MSCL
+            sensor_info: Sensor configuration info
+        """
+        import pandas as pd
+        from pathlib import Path
+        import os
+
+        LOGGER.info(f"Processing {len(data_sweeps)} sweeps into 2-minute CSV files...")
+
+        # Prepare data structure
+        all_samples = []
+        num_channels = len(sensor_info.axes)
+        if num_channels == 0:
+            num_channels = 3
+
+        # Parse all sweeps
+        for sweep in data_sweeps:
+            try:
+                timestamp = sweep.timestamp().seconds()
+                data = sweep.data()
+
+                if len(data) == 0:
+                    continue
+
+                num_samples = len(data) // num_channels
+
+                # Parse each sample in this sweep
+                for i in range(num_samples):
+                    idx_base = i * num_channels
+                    channel_values = []
+
+                    # Extract channel values
+                    try:
+                        for ch in range(num_channels):
+                            channel_values.append(data[idx_base + ch].as_float())
+                    except:
+                        for ch in range(num_channels):
+                            channel_values.append(data[idx_base + ch].as_double())
+
+                    # Build x, y, z based on configured axes
+                    x, y, z = 0.0, 0.0, 0.0
+                    axes_lower = [a.lower() for a in sensor_info.axes]
+
+                    for idx, axis in enumerate(axes_lower):
+                        if axis == 'x':
+                            x = channel_values[idx]
+                        elif axis == 'y':
+                            y = channel_values[idx]
+                        elif axis == 'z':
+                            z = channel_values[idx]
+
+                    # Calculate sample timestamp
+                    sample_rate = float(sensor_info.sample_rate_hz)
+                    sample_dt = 1.0 / sample_rate if sample_rate > 0 else 0.001
+                    sample_timestamp = timestamp + (i * sample_dt)
+
+                    all_samples.append({
+                        'timestamp': sample_timestamp,
+                        'x': x,
+                        'y': y,
+                        'z': z
+                    })
+
+            except Exception as parse_err:
+                LOGGER.warning(f"Could not parse sweep: {parse_err}")
+                continue
+
+        if len(all_samples) == 0:
+            LOGGER.warning("No samples parsed from datalog")
+            return
+
+        LOGGER.info(f"Parsed {len(all_samples)} samples total")
+
+        # Convert to DataFrame
+        df = pd.DataFrame(all_samples)
+        df = df.sort_values('timestamp')
+
+        # Calculate 2-minute intervals
+        TWO_MINUTES = 120  # seconds
+        start_time = df['timestamp'].iloc[0]
+        end_time = df['timestamp'].iloc[-1]
+        total_duration = end_time - start_time
+
+        LOGGER.info(f"Total recording duration: {total_duration:.1f} seconds ({total_duration/60:.1f} minutes)")
+
+        # Create output directory
+        output_dir = Path("data/acceleration")
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Split into 2-minute chunks and save
+        current_start = start_time
+        file_count = 0
+
+        while current_start < end_time:
+            current_end = current_start + TWO_MINUTES
+
+            # Filter data for this time window
+            mask = (df['timestamp'] >= current_start) & (df['timestamp'] < current_end)
+            chunk_df = df[mask]
+
+            if len(chunk_df) == 0:
+                current_start = current_end
+                continue
+
+            # Generate filename based on first timestamp in chunk
+            from datetime import datetime
+            chunk_start_dt = datetime.fromtimestamp(chunk_df['timestamp'].iloc[0])
+            filename = f"sensor_{sensor_id}_acceleration_{chunk_start_dt.strftime('%Y%m%d_%H%M%S')}.csv"
+            filepath = output_dir / filename
+
+            # Save CSV
+            chunk_df[['timestamp', 'x', 'y', 'z']].to_csv(filepath, index=False)
+
+            file_count += 1
+            LOGGER.info(f"Saved {filename} ({len(chunk_df)} samples)")
+
+            current_start = current_end
+
+        LOGGER.info(f"Generated {file_count} CSV files in {output_dir}")
 
     def reset_sync_network(self) -> None:
         """Reset SyncSamplingNetwork state to allow restarting sampling.
@@ -631,26 +854,38 @@ class RealMSCLClient(MSCLClient):
         # CRÍTICO: Envolver TODO en try-except para capturar errores del thread
         import traceback
         import sys
-        
+
         # DEBUG: Verificar que LOGGER existe y funciona
         print(f"[DEBUG] Thread {threading.current_thread().name} started", file=sys.stderr)
         print(f"[DEBUG] LOGGER object: {LOGGER}", file=sys.stderr)
         print(f"[DEBUG] LOGGER type: {type(LOGGER)}", file=sys.stderr)
         print(f"[DEBUG] Module globals has LOGGER: {'LOGGER' in globals()}", file=sys.stderr)
-        
+
         info = self._sensors[sensor_id]
-        
-        # NUEVO: Detector de frecuencia real
-        freq_detector = FrequencyDetector(window_size=1000)
-        last_freq_report = time.time()
-        
+
         try:
             # Try to configure and start the node with multiple strategies
             LOGGER.info(f"Initializing sampling for node {sensor_id}...")
             self._configure_and_start_node(node, info.sample_rate_hz)
-            
+
+            # DATALOGGING MODE: Just wait until stop is signaled
+            if self.use_datalogging:
+                LOGGER.info(f"DATALOGGING MODE: Worker for {sensor_id} is idle (data stored in sensor)")
+                LOGGER.info("Waiting for stop signal to download data...")
+
+                while not stop_event.is_set():
+                    time.sleep(1.0)  # Just wait
+
+                LOGGER.info(f"Stop signal received for {sensor_id}")
+                return
+
+            # SYNC MODE: Real-time data collection
             LOGGER.info(f"Stream worker for {sensor_id} starting data collection loop...")
             node_addr_int = int(sensor_id)
+
+            # Detector de frecuencia real
+            freq_detector = FrequencyDetector(window_size=1000)
+            last_freq_report = time.time()
             samples_received = 0
             batches_sent = 0
             accumulated_samples = []  # Accumulate samples before sending to callback
@@ -899,15 +1134,35 @@ class RealMSCLClient(MSCLClient):
             #     LOGGER.warning(f"Failed to stop node {sensor_id}: {e}")
     
     def _configure_and_start_node(self, node: mscl.WirelessNode, sample_rate_hz: float) -> None:
-        """Start sampling using SyncSamplingNetwork (configuration already applied in configure_node).
+        """Start sampling using SyncSamplingNetwork or datalogging mode.
 
         IMPORTANTE: Este método NO debe reconfigurar el nodo. La configuración ya se aplicó
-        en configure_node() y debe respetarse. Este método solo agrega el nodo a la red
-        de sincronización e inicia el sampling.
+        en configure_node() y debe respetarse. Este método solo inicia el sampling o datalogging.
         """
         import traceback
         import sys
 
+        # DATALOGGING MODE: Start logging to sensor memory
+        if self.use_datalogging:
+            try:
+                sensor_id = str(node.nodeAddress())
+                LOGGER.info(f"Starting DATALOGGING for node {sensor_id}...")
+
+                # Start datalogging on the node
+                node.startNonSyncSampling()
+
+                # Record start time for this session
+                self._datalogging_sessions[sensor_id] = time.time()
+
+                LOGGER.info(f"SUCCESS: Datalogging started for node {sensor_id}")
+                LOGGER.info(f"Data is being stored in sensor memory (not transmitted)")
+                return  # Success!
+
+            except Exception as e:
+                LOGGER.error(f"Failed to start datalogging for node {node.nodeAddress()}: {e}")
+                raise
+
+        # SYNC MODE: Real-time transmission
         try:
             # If sync network is already started, don't try to modify it
             # This happens when initialize_sync_network() was called before start_streaming()
