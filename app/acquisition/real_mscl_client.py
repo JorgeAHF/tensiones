@@ -288,12 +288,16 @@ class RealMSCLClient(MSCLClient):
             LOGGER.info(f"Creating WirelessNodeConfig for sensor {sensor_id}")
             node_config = mscl.WirelessNodeConfig()
 
-            # PASO 1: Configurar modo de muestreo (SYNC o DATALOGGING)
+            # PASO 1: Configurar modo de muestreo SYNC
+            # NOTA: El modo Log/Transmit debe configurarse en SensorConnect
+            # samplingMode_sync funciona tanto para Transmit como para Log
+            node_config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
+
             if self.use_datalogging:
-                node_config.samplingMode(mscl.WirelessTypes.samplingMode_armedDatalog)
-                LOGGER.info("Set sampling mode: ARMED DATALOGGING (data stored in sensor memory)")
+                LOGGER.info("Set sampling mode: SYNC")
+                LOGGER.info("NOTE: Datalogging mode must be configured in SensorConnect (Log or Log and Transmit)")
+                LOGGER.info("This app will download logged data when you stop monitoring")
             else:
-                node_config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
                 LOGGER.info("Set sampling mode: SYNC (real-time transmission)")
 
             # PASO 2: Convertir Hz a enum de MSCL
@@ -1142,27 +1146,19 @@ class RealMSCLClient(MSCLClient):
         import traceback
         import sys
 
-        # DATALOGGING MODE: Start logging to sensor memory
+        # DATALOGGING MODE: The node behavior (Log vs Transmit) is controlled by
+        # SensorConnect configuration. We start the sync network normally,
+        # and the node will automatically log to memory if configured as "Log" mode.
         if self.use_datalogging:
-            try:
-                sensor_id = str(node.nodeAddress())
-                LOGGER.info(f"Starting DATALOGGING for node {sensor_id}...")
+            sensor_id = str(node.nodeAddress())
+            LOGGER.info(f"Starting node {sensor_id} in DATALOGGING mode...")
+            LOGGER.info("IMPORTANT: Node must be configured as 'Log' mode in SensorConnect")
+            LOGGER.info("Data will be stored in sensor memory and downloaded when stopped")
 
-                # Start datalogging on the node
-                node.startNonSyncSampling()
+            # Record start time for this session
+            self._datalogging_sessions[sensor_id] = time.time()
 
-                # Record start time for this session
-                self._datalogging_sessions[sensor_id] = time.time()
-
-                LOGGER.info(f"SUCCESS: Datalogging started for node {sensor_id}")
-                LOGGER.info(f"Data is being stored in sensor memory (not transmitted)")
-                return  # Success!
-
-            except Exception as e:
-                LOGGER.error(f"Failed to start datalogging for node {node.nodeAddress()}: {e}")
-                raise
-
-        # SYNC MODE: Real-time transmission
+        # SYNC MODE: Start the sync network (works for both Transmit and Log modes)
         try:
             # If sync network is already started, don't try to modify it
             # This happens when initialize_sync_network() was called before start_streaming()

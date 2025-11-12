@@ -4,6 +4,8 @@
 
 El **modo datalogging** es la solución para capturar datos a frecuencias altas (>64 Hz) con el G-Link-200, superando las limitaciones de transmisión wireless.
 
+**IMPORTANTE**: Requiere configuración previa en SensorConnect (ver sección Setup).
+
 ## 🔧 Cómo Funciona
 
 ### Modo Normal (Real-Time)
@@ -35,6 +37,32 @@ Sensor → [Memoria Interna] → Descarga al final → CSV (cada 2 min)
 3. **Tiempo de descarga** - puede tomar 2-5 minutos por cada hora de datos
 4. **Memoria limitada** - ~2-4 horas a 1024 Hz, menos a frecuencias más altas
 
+## 🔧 Setup (Una Sola Vez)
+
+**PASO OBLIGATORIO**: Antes de usar modo datalogging, configura el nodo en SensorConnect:
+
+### En SensorConnect:
+
+1. **Conectar al BaseStation**
+   - Abrir SensorConnect
+   - Conectar a BaseStation 177076
+
+2. **Ir a Wireless Network**
+   - Click en "Base Station 177076"
+   - Click en "Wireless Network"
+
+3. **Configurar Modo Log**
+   - En la tabla de nodos, buscar columna "Log/Transmit"
+   - Para tu nodo (10603), seleccionar: **"Log"** o **"Log and Transmit"**
+   - Recomendado: **"Log"** (solo guarda, no transmite)
+
+4. **Aplicar Configuración**
+   - Click en "Apply and Start Network"
+   - Esperar confirmación
+   - **Cerrar SensorConnect** (importante!)
+
+Esta configuración se mantiene en el sensor - solo necesitas hacerlo una vez.
+
 ## 🚀 Uso
 
 ### Opción 1: Aplicación Principal
@@ -46,6 +74,8 @@ python -m app.main --datalogging
 # O también:
 python -m app.main --datalogging --config app/config/app.yaml
 ```
+
+**NOTA**: Asegúrate de haber configurado el nodo en modo "Log" en SensorConnect primero.
 
 ### Opción 2: Script de Prueba
 
@@ -220,6 +250,12 @@ timestamp,x,y,z
 ### Caso de Uso: Captura a 1024 Hz por 30 minutos
 
 ```bash
+# PASO 0: Configurar nodo en SensorConnect (solo una vez)
+# - Abrir SensorConnect
+# - Wireless Network → Nodo 10603 → Log/Transmit: "Log"
+# - Apply and Start Network
+# - Cerrar SensorConnect
+
 # 1. Iniciar app en modo datalogging
 python -m app.main --datalogging
 
@@ -230,6 +266,7 @@ python -m app.main --datalogging
 
 # 3. Esperar 30 minutos
 #    (LED del sensor parpadeando = OK)
+#    (Gráficas vacías = NORMAL en modo Log)
 
 # 4. Click "Set nodes to Idle"
 
