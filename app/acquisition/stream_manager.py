@@ -19,6 +19,7 @@ from app.analysis.tension import TensionResult, estimate_tension
 from app.sinks.csv_writer import RotatingCsvWriter
 from app.sinks.parquet_writer import RotatingParquetWriter
 from app.sinks.rotation import RotationPolicy
+from app.sinks.chunk_writer import RealtimeChunkWriter
 from app.utils.timeutils import DEFAULT_TZ, format_timestamp, now_local_utc
 from app.utils.validators import QualityAssessment, Thresholds
 
@@ -381,6 +382,11 @@ class StreamManager:
         self._accel_parquet_writers: Dict[str, RotatingParquetWriter] = {}
         self._tension_parquet_writers: Dict[str, RotatingParquetWriter] = {}
 
+        # Chunk writers para generación en tiempo real
+        self._chunk_writers: Dict[str, RealtimeChunkWriter] = {}
+        self._chunk_duration_minutes = 2.0  # Default: chunks de 2 minutos
+        logger.info(f"[CHUNK WRITER] Chunks en tiempo real habilitados (duración: {self._chunk_duration_minutes} min)")
+
         # Headers para archivos CSV
         self._accel_headers = [
             "timestamp_local",
@@ -658,6 +664,9 @@ class StreamManager:
             state.session_logger.info(f"Ejes activos: {state.info.axes}")
             state.session_logger.info("")
 
+            # DESHABILITADO: Chunks en tiempo real removidos - usar dividir_csv.py después del monitoreo
+            state.session_logger.info(f"[CHUNK WRITER] DESHABILITADO - usar scripts/dividir_csv.py después del monitoreo")
+
             logger.info(f"[STREAM_MANAGER] Calling start_streaming for {sensor_id}...")
             self.client.start_streaming(sensor_id, callback)
             state.streaming = True
@@ -708,6 +717,8 @@ class StreamManager:
                     handler.close()
                     state.session_logger.removeHandler(handler)
                 state.session_logger = None
+
+            # DESHABILITADO: Chunks en tiempo real - NO hay chunk writer que finalizar
 
             state.streaming = False
 
@@ -968,6 +979,8 @@ class StreamManager:
             # También loggear en session_logger si existe
             if state.session_logger:
                 state.session_logger.info(log_msg)
+
+            # Los chunks se generan automáticamente en thread separado (NO bloquea aquí)
         else:
             samples_lost = state.samples_received_total - state.samples_written_total
 

@@ -49,5 +49,11 @@ class RotatingCsvWriter:
                 writer.writerows(rows)  # Write all rows at once
             return path
 
+    @property
+    def current_path(self) -> Path:
+        """Get the current file path (without triggering rotation)."""
+        with self._lock:
+            return self._rotator._current_path or self._rotator.path()
+
 
 __all__ = ["RotatingCsvWriter"]

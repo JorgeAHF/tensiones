@@ -376,7 +376,20 @@ class RealMSCLClient(MSCLClient):
             actual_rate_enum = node.getSampleRate()
             actual_rate_hz = self._sample_rate_enum_to_hz(actual_rate_enum)
             LOGGER.info(f"Verification - Configured rate: {sample_rate_hz} Hz, Actual rate enum: {actual_rate_enum}, Actual rate Hz: {actual_rate_hz} Hz")
-            
+
+            # PASO 7.5: Verificar duración ilimitada
+            try:
+                config_readback = node.getConfig()
+                is_unlimited = config_readback.unlimitedDuration()
+                LOGGER.info(f"✅ Verification - Unlimited duration: {is_unlimited}")
+                if not is_unlimited:
+                    LOGGER.warning(f"⚠️⚠️⚠️ WARNING: Node {sensor_id} NO tiene unlimited duration! Intentando configurar de nuevo...")
+                    config_readback.unlimitedDuration(True)
+                    node.applyConfig(config_readback)
+                    LOGGER.info(f"Re-aplicada configuración con unlimitedDuration=True")
+            except Exception as e:
+                LOGGER.warning(f"Could not verify unlimited duration: {e}")
+
             # PASO 8: Actualizar info del sensor con frecuencia verificada
             info.sample_rate_hz = actual_rate_hz  # Usar la frecuencia verificada
             
@@ -900,17 +913,23 @@ class RealMSCLClient(MSCLClient):
             
             # DEBUG: Contador de iteraciones del loop
             loop_iterations = 0
+            loop_start_time = time.time()
+
             while not stop_event.is_set():
                 loop_iterations += 1
-                
-                # DEBUG: Log cada 20 iteraciones (~10 segundos)
+
+                # DEBUG: Log cada 20 iteraciones (~10 segundos) con timestamp
                 if loop_iterations % 20 == 0:
-                    LOGGER.info(f"Stream loop iteration #{loop_iterations} - Still receiving data...")
-                
+                    elapsed_min = (time.time() - loop_start_time) / 60
+                    LOGGER.info(f"🔄 Stream loop iteration #{loop_iterations} (Tiempo transcurrido: {elapsed_min:.2f} min) - Still receiving data...")
+
                 # Get data from base station
-                # Timeout aumentado a 2000ms para manejar mejor ráfagas grandes a alta frecuencia
+                # CRITICAL: Use SHORT timeout (100ms) to poll frequently and prevent
+                # MSCL's internal circular buffer from overflowing at high frequencies.
+                # At 256 Hz × 3 axes = 768 samples/s, we get ~77 samples per 100ms call.
+                # This frequent polling prevents data loss without complex threading.
                 LOGGER.debug(f"Calling getData() - iteration #{loop_iterations}")
-                sweeps = self.base_station.getData(2000)  # 2000ms timeout (antes 500ms)
+                sweeps = self.base_station.getData(100)  # 100ms timeout for high-frequency support
                 LOGGER.debug(f"getData() returned {len(sweeps)} sweeps")
                 
                 # Check if we're receiving data
@@ -919,8 +938,19 @@ class RealMSCLClient(MSCLClient):
                     time_since_last = time.time() - last_data_time
                     if time_since_last > 10.0:  # 10 seconds without data
                         no_data_warnings += 1
+                        elapsed_total = (time.time() - loop_start_time) / 60
                         if no_data_warnings % 5 == 1:  # Log every 5th warning (every ~50s)
-                            LOGGER.warning(f"No data from node {sensor_id} for {time_since_last:.1f}s - check hardware LED status")
+                            LOGGER.warning(
+                                f"⚠️ Sin datos del nodo {sensor_id} por {time_since_last:.1f}s "
+                                f"(Tiempo total transcurrido: {elapsed_total:.2f} min, "
+                                f"Advertencias: {no_data_warnings}) - Verificar LEDs del hardware"
+                            )
+                        # Si llevamos mucho tiempo sin datos, es probable que el nodo se haya detenido
+                        if time_since_last > 120.0:  # 2 minutos sin datos
+                            LOGGER.error(
+                                f"❌ CRÍTICO: Nodo {sensor_id} sin transmitir por {time_since_last:.1f}s "
+                                f"({time_since_last/60:.1f} min). Posible problema de hardware o configuración."
+                            )
                 else:
                     # Reset timeout counter when we get data
                     last_data_time = time.time()
@@ -1128,7 +1158,24 @@ class RealMSCLClient(MSCLClient):
             raise
         
         finally:
-            LOGGER.info(f"Stream worker for {sensor_id} shutting down...")
+            # Calcular tiempo total de ejecución
+            total_time_sec = time.time() - loop_start_time
+            total_time_min = total_time_sec / 60
+
+            # Log detallado del shutdown
+            LOGGER.info("=" * 80)
+            LOGGER.info(f"🛑 Stream worker for {sensor_id} shutting down...")
+            LOGGER.info(f"   Razón: {'stop_event activado (usuario detuvo)' if stop_event.is_set() else 'Loop terminó naturalmente (posible timeout o error)'}")
+            LOGGER.info(f"   Tiempo total de ejecución: {total_time_min:.2f} minutos ({total_time_sec:.1f} segundos)")
+            LOGGER.info(f"   Iteraciones del loop: {loop_iterations:,}")
+            LOGGER.info(f"   Batches enviados: {batches_sent:,}")
+
+            # Verificar si hay datos pendientes en el buffer
+            if accumulated_samples:
+                LOGGER.warning(f"   ⚠️ Datos pendientes en buffer: {len(accumulated_samples)} muestras NO escritas")
+
+            LOGGER.info("=" * 80)
+
             # Don't try to stop the node, it may cause errors
             # try:
             #     if sensor_id in self.nodes:

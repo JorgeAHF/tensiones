@@ -21,7 +21,7 @@ storage:
     base_dir: null
   rotation:
     max_mb: 100
-    minutes: 2
+    minutes: null  # Sin rotación durante monitoreo - dividir después con script
     mode: time
     format: csv  # Opciones: csv (compatible con Excel/gráficas), parquet (5-10x más rápido)
     compression: snappy  # Solo para Parquet. Opciones: snappy, gzip, brotli
