@@ -1424,25 +1424,27 @@ class DashApp:
         def apply_and_start_sampling_network(n_clicks, enabled_list, id_list, rates, axis_x, axis_y, axis_z, formats):
             """Configura e inicia múltiples nodos (Sampling Network)."""
             import traceback  # Importar al inicio del callback
-            
+
             logger.info(f"[SAMPLING NETWORK] Callback ejecutado - n_clicks={n_clicks}, enabled_list={enabled_list}")
-            
+
             if not n_clicks:
                 logger.warning("[SAMPLING NETWORK] n_clicks es None o 0 - abortando")
                 return dash.no_update, dash.no_update
-            
+
             try:
                 success_sensors = []
                 failed_sensors = []
                 state_data = {}
-                
+                enabled_sensors = []
+
+                # PASO 1: Recolectar todos los sensores habilitados y sus configuraciones
                 for i, (enabled, node_id_dict) in enumerate(zip(enabled_list, id_list)):
                     if not enabled:
                         continue
-                    
+
                     sensor_id = node_id_dict["index"]
                     rate = rates[i]
-                    
+
                     # Construir lista de ejes activos
                     axes = []
                     if axis_x[i]:
@@ -1451,16 +1453,40 @@ class DashApp:
                         axes.append("y")
                     if axis_z[i]:
                         axes.append("z")
-                    
+
                     data_format = formats[i]
-                    
+
                     # Guardar configuración en state
                     state_data[sensor_id] = {
                         "rate": rate,
                         "axes": axes,
                         "format": data_format,
                     }
-                    
+
+                    enabled_sensors.append(sensor_id)
+
+                # PASO 2: Inicializar SyncSamplingNetwork con TODOS los sensores habilitados
+                if len(enabled_sensors) > 0:
+                    logger.info(f"[SAMPLING NETWORK] Inicializando red con {len(enabled_sensors)} sensores: {enabled_sensors}")
+                    try:
+                        self.manager.client.initialize_sync_network(enabled_sensors)
+                        logger.info(f"[SAMPLING NETWORK] ✅ Red sincronizada inicializada correctamente")
+                    except Exception as e:
+                        error_detail = traceback.format_exc()
+                        logger.error(f"[SAMPLING NETWORK] ❌ Error inicializando red sincronizada: {e}")
+                        logger.error(error_detail)
+                        return dbc.Alert(f"Error inicializando red: {str(e)}", color="danger"), state_data
+
+                # PASO 3: Configurar e iniciar cada sensor
+                for i, (enabled, node_id_dict) in enumerate(zip(enabled_list, id_list)):
+                    if not enabled:
+                        continue
+
+                    sensor_id = node_id_dict["index"]
+                    rate = state_data[sensor_id]["rate"]
+                    axes = state_data[sensor_id]["axes"]
+                    data_format = state_data[sensor_id]["format"]
+
                     try:
                         # Configurar e iniciar nodo
                         self.manager.configure(sensor_id, sample_rate=rate, axes=axes, data_format=data_format)
