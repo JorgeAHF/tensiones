@@ -312,8 +312,9 @@ class RealMSCLClient(MSCLClient):
             features = node.features()
 
             # burst_duration_seconds: duración de cada burst (cuánto tiempo recolecta datos)
-            # Con 2 segundos: latencia aceptable + buen balance de eficiencia RF
-            burst_duration_seconds = 2  # DEBE SER ENTERO para TimeSpan.Seconds()
+            # REDUCIDO A 1 SEGUNDO: bursts pequeños permiten timeBetweenBursts más cortos
+            # Con bursts grandes (2s), el hardware rechaza intervalos cortos
+            burst_duration_seconds = 1  # DEBE SER ENTERO para TimeSpan.Seconds()
             samples_per_burst_desired = int(sample_rate_hz * burst_duration_seconds)
 
             # NORMALIZAR numSweeps: el nodo solo acepta ciertos valores
