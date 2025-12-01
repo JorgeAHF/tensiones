@@ -289,14 +289,13 @@ class RealMSCLClient(MSCLClient):
             LOGGER.info(f"Creating WirelessNodeConfig for sensor {sensor_id}")
             node_config = mscl.WirelessNodeConfig()
 
-            # PASO 1: Configurar modo de muestreo SYNC BURST
-            # CRÍTICO: samplingMode_syncBurst permite transmisión por lotes (batch transmission)
-            # Esto reduce masivamente el overhead de RF al enviar múltiples muestras por paquete
-            # en lugar de 1 muestra por paquete (que causa pérdida de datos con múltiples sensores)
-            node_config.samplingMode(mscl.WirelessTypes.samplingMode_syncBurst)
+            # PASO 1: Configurar modo de muestreo SYNC (Continuous)
+            # REVERTIDO de burst mode a continuous mode para estabilidad
+            # Con 1-2 sensores @ 128 Hz, continuous mode funciona correctamente
+            node_config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
             LOGGER.info("=" * 80)
-            LOGGER.info("CONFIGURANDO SYNC BURST MODE")
-            LOGGER.info("Esto permite múltiples muestras por paquete RF para reducir overhead")
+            LOGGER.info("CONFIGURANDO CONTINUOUS SYNC MODE")
+            LOGGER.info("Modo continuo - transmisión en tiempo real muestra por muestra")
             LOGGER.info("=" * 80)
 
             # PASO 2: Convertir Hz a enum de MSCL
@@ -304,139 +303,9 @@ class RealMSCLClient(MSCLClient):
             node_config.sampleRate(rate_enum)
             LOGGER.info(f"Set sample rate: {sample_rate_hz} Hz (enum: {rate_enum})")
 
-            # PASO 3: Configurar parámetros de BURST
-            # CRÍTICO: Los valores de burst deben ser NORMALIZADOS usando NodeFeatures
-            # El hardware solo acepta ciertos valores específicos para numSweeps y timeBetweenBursts
-
-            # Obtener las features del nodo para normalización
-            features = node.features()
-
-            # burst_duration_seconds: duración de cada burst (cuánto tiempo recolecta datos)
-            # REDUCIDO A 1 SEGUNDO: bursts pequeños permiten timeBetweenBursts más cortos
-            # Con bursts grandes (2s), el hardware rechaza intervalos cortos
-            burst_duration_seconds = 1  # DEBE SER ENTERO para TimeSpan.Seconds()
-            samples_per_burst_desired = int(sample_rate_hz * burst_duration_seconds)
-
-            # NORMALIZAR numSweeps: el nodo solo acepta ciertos valores
-            # NodeFeatures::normalizeNumSweeps ajusta al valor válido más cercano
-            normalized_num_sweeps = features.normalizeNumSweeps(samples_per_burst_desired)
-            node_config.numSweeps(normalized_num_sweeps)
-
-            actual_burst_duration = normalized_num_sweeps / sample_rate_hz
-            LOGGER.info(f"Set numSweeps: {normalized_num_sweeps} samples per burst")
-            LOGGER.info(f"  → Requested: {samples_per_burst_desired}, Normalized to: {normalized_num_sweeps}")
-            LOGGER.info(f"  → Actual burst duration: {actual_burst_duration:.2f}s at {sample_rate_hz} Hz")
-
-            # timeBetweenBursts: intervalo entre bursts
-            # IMPORTANTE: El hardware tiene un MÍNIMO para timeBetweenBursts que depende de:
-            # - Duración del burst (numSweeps / sampleRate)
-            # - Tiempo de transmisión RF
-            # - Número de nodos en la red
-
-            # CRÍTICO: Determinar número de sensores activos en la red
-            # Con pocos sensores (1-2), podemos usar bursts más frecuentes
-            # Con muchos sensores (7), necesitamos bursts menos frecuentes
-            try:
-                # Contar nodos en la red sincronizada
-                num_sensors_in_network = len(self._sync_network_sensors) if hasattr(self, '_sync_network_sensors') else 1
-
-                LOGGER.info("=" * 80)
-                LOGGER.info(f"CONFIGURANDO timeBetweenBursts PARA {num_sensors_in_network} SENSORES:")
-
-                # Calcular mínimo teórico basado en burst_duration
-                # Regla empírica: timeBetweenBursts >= 3-4x burst_duration
-                # (para dar tiempo a transmisión RF + TDMA scheduling)
-                min_theoretical = int(actual_burst_duration * 4)
-                LOGGER.info(f"  Mínimo teórico (4x burst duration): {min_theoretical}s")
-
-                # Estrategia adaptativa basada en número de sensores
-                if num_sensors_in_network <= 2:
-                    # Con 1-2 sensores: priorizar BAJA LATENCIA
-                    # Usar mínimo teórico como base
-                    test_values_seconds = [
-                        max(min_theoretical, 5), 10, 15, 20, 30
-                    ]
-                    LOGGER.info("  Estrategia: BAJA LATENCIA (1-2 sensores)")
-                elif num_sensors_in_network <= 4:
-                    # Con 3-4 sensores: balance latencia/estabilidad
-                    test_values_seconds = [
-                        max(min_theoretical, 15), 20, 30, 40
-                    ]
-                    LOGGER.info("  Estrategia: BALANCE (3-4 sensores)")
-                else:
-                    # Con 5+ sensores: priorizar ESTABILIDAD sobre latencia
-                    test_values_seconds = [60, 45, 30]
-                    LOGGER.info("  Estrategia: ESTABILIDAD (5+ sensores)")
-                    LOGGER.warning("  ⚠️ Con 7 sensores, la latencia será alta (~60s entre bursts)")
-                    LOGGER.warning("  ⚠️ Para baja latencia, use máximo 1-2 sensores simultáneos")
-
-                LOGGER.info(f"  Valores a probar: {test_values_seconds}")
-
-                normalized_time_between = None
-
-                for test_value in test_values_seconds:
-                    try:
-                        test_time = mscl.TimeSpan.Seconds(test_value)
-                        normalized = features.normalizeTimeBetweenBursts(test_time)
-
-                        LOGGER.info(f"  Probando {test_value}s → normalizado a {normalized.getSeconds()}s")
-
-                        # Usar el primer valor que normalice exitosamente
-                        normalized_time_between = normalized
-                        LOGGER.info(f"  ✅ Valor aceptado: {normalized.getSeconds()}s")
-                        break
-
-                    except Exception as test_err:
-                        LOGGER.warning(f"  ❌ {test_value}s rechazado: {test_err}")
-                        continue
-
-                if normalized_time_between is None:
-                    # Fallback conservador
-                    LOGGER.error("  Todos los valores fallaron, usando fallback de 120s")
-                    fallback = mscl.TimeSpan.Seconds(120)
-                    normalized_time_between = features.normalizeTimeBetweenBursts(fallback)
-
-                node_config.timeBetweenBursts(normalized_time_between)
-
-                actual_interval = normalized_time_between.getSeconds()
-                bursts_per_min = 60.0 / actual_interval
-                samples_per_min = bursts_per_min * normalized_num_sweeps
-
-                LOGGER.info("=" * 80)
-                LOGGER.info("CONFIGURACIÓN FINAL DE BURST MODE:")
-                LOGGER.info(f"  Sensores en red: {num_sensors_in_network}")
-                LOGGER.info(f"  Muestras por burst: {normalized_num_sweeps}")
-                LOGGER.info(f"  Duración del burst: {actual_burst_duration:.2f}s")
-                LOGGER.info(f"  Intervalo entre bursts: {actual_interval}s")
-                LOGGER.info(f"  Bursts por minuto: {bursts_per_min:.2f}")
-                LOGGER.info(f"  Muestras por minuto: {samples_per_min:.0f} de {sample_rate_hz * 60:.0f} esperadas")
-                LOGGER.info(f"  Cobertura de datos: {(samples_per_min / (sample_rate_hz * 60)) * 100:.1f}%")
-                LOGGER.info("=" * 80)
-
-            except Exception as e:
-                LOGGER.error(f"FATAL: Error configurando timeBetweenBursts: {e}")
-                import traceback
-                LOGGER.error(traceback.format_exc())
-                raise
-
-            # unlimitedDuration: DEBE ser False para burst mode
-            node_config.unlimitedDuration(False)
-            LOGGER.info("Set unlimitedDuration: False (required for burst mode)")
-
-            # Cálculo de eficiencia con valores normalizados
-            actual_time_between_sec = normalized_time_between.getSeconds()
-            bursts_per_second = 1.0 / actual_time_between_sec if actual_time_between_sec > 0 else 0
-            packets_per_second_per_sensor = bursts_per_second
-            LOGGER.info("=" * 80)
-            LOGGER.info("BURST MODE EFFICIENCY (NORMALIZED VALUES):")
-            LOGGER.info(f"  Samples per burst: {normalized_num_sweeps}")
-            LOGGER.info(f"  Time between bursts: {actual_time_between_sec}s")
-            LOGGER.info(f"  Bursts per second: {bursts_per_second:.2f}")
-            LOGGER.info(f"  RF packets per sensor: ~{packets_per_second_per_sensor:.2f} packets/s")
-            LOGGER.info(f"  vs. Continuous mode: {sample_rate_hz} packets/s")
-            if packets_per_second_per_sensor > 0:
-                LOGGER.info(f"  Reduction factor: {sample_rate_hz / packets_per_second_per_sensor:.0f}x")
-            LOGGER.info("=" * 80)
+            # PASO 3: Configurar duración ilimitada (modo continuo)
+            node_config.unlimitedDuration(True)
+            LOGGER.info("Set unlimitedDuration: True (continuous sampling)")
             
             # PASO 4: Habilitar canales (X, Y, Z)
             channels = mscl.ChannelMask()
@@ -482,34 +351,12 @@ class RealMSCLClient(MSCLClient):
             # PASO 7: Verificar configuración aplicada
             actual_rate_enum = node.getSampleRate()
             actual_rate_hz = self._sample_rate_enum_to_hz(actual_rate_enum)
-            LOGGER.info(f"Verification - Configured rate: {sample_rate_hz} Hz, Actual rate enum: {actual_rate_enum}, Actual rate Hz: {actual_rate_hz} Hz")
-
-            # PASO 7.5: Verificar parámetros de burst mode
-            try:
-                config_readback = node.getConfig()
-                is_unlimited = config_readback.unlimitedDuration()
-                actual_num_sweeps = config_readback.numSweeps()
-                actual_time_between = config_readback.timeBetweenBursts()
-
-                LOGGER.info("=" * 80)
-                LOGGER.info("VERIFICACIÓN DE BURST MODE:")
-                LOGGER.info(f"  Sample Rate: {actual_rate_hz} Hz")
-                LOGGER.info(f"  Unlimited Duration: {is_unlimited} (debe ser False para burst)")
-                LOGGER.info(f"  Samples per Burst (numSweeps): {actual_num_sweeps}")
-                LOGGER.info(f"  Time Between Bursts: {actual_time_between.getSeconds()} seconds")
-                LOGGER.info(f"  Burst Duration: ~{actual_num_sweeps / actual_rate_hz:.2f} seconds")
-                LOGGER.info(f"  RF Packets/Second: ~{1.0 / actual_time_between.getSeconds():.2f}")
-                LOGGER.info("=" * 80)
-
-                # Verificar que unlimitedDuration es False (requerido para burst)
-                if is_unlimited:
-                    LOGGER.warning(f"⚠️ WARNING: unlimitedDuration is True but should be False for burst mode!")
-                    LOGGER.warning(f"  Burst mode may not work correctly. Check node configuration.")
-                else:
-                    LOGGER.info(f"✅ Burst mode configured correctly (unlimitedDuration=False)")
-
-            except Exception as e:
-                LOGGER.warning(f"Could not verify burst mode configuration: {e}")
+            LOGGER.info("=" * 80)
+            LOGGER.info("VERIFICACIÓN DE CONFIGURACIÓN:")
+            LOGGER.info(f"  Sample Rate solicitado: {sample_rate_hz} Hz")
+            LOGGER.info(f"  Sample Rate actual: {actual_rate_hz} Hz")
+            LOGGER.info(f"  Unlimited Duration: True (modo continuo)")
+            LOGGER.info("=" * 80)
 
             # PASO 8: Actualizar info del sensor con frecuencia verificada
             info.sample_rate_hz = actual_rate_hz  # Usar la frecuencia verificada
