@@ -288,48 +288,52 @@ class RealMSCLClient(MSCLClient):
             LOGGER.info(f"Creating WirelessNodeConfig for sensor {sensor_id}")
             node_config = mscl.WirelessNodeConfig()
 
-            # PASO 1: Configurar modo de muestreo SYNC
-            # NOTA: El modo Log/Transmit debe configurarse en SensorConnect
-            # samplingMode_sync funciona tanto para Transmit como para Log
-            node_config.samplingMode(mscl.WirelessTypes.samplingMode_sync)
-
-            if self.use_datalogging:
-                LOGGER.info("Set sampling mode: SYNC")
-                LOGGER.info("NOTE: Datalogging mode must be configured in SensorConnect (Log or Log and Transmit)")
-                LOGGER.info("This app will download logged data when you stop monitoring")
-            else:
-                LOGGER.info("Set sampling mode: SYNC (real-time transmission)")
+            # PASO 1: Configurar modo de muestreo SYNC BURST
+            # CRÍTICO: samplingMode_syncBurst permite transmisión por lotes (batch transmission)
+            # Esto reduce masivamente el overhead de RF al enviar múltiples muestras por paquete
+            # en lugar de 1 muestra por paquete (que causa pérdida de datos con múltiples sensores)
+            node_config.samplingMode(mscl.WirelessTypes.samplingMode_syncBurst)
+            LOGGER.info("=" * 80)
+            LOGGER.info("CONFIGURANDO SYNC BURST MODE")
+            LOGGER.info("Esto permite múltiples muestras por paquete RF para reducir overhead")
+            LOGGER.info("=" * 80)
 
             # PASO 2: Convertir Hz a enum de MSCL
             rate_enum = self._hz_to_sample_rate_enum(sample_rate_hz)
             node_config.sampleRate(rate_enum)
             LOGGER.info(f"Set sample rate: {sample_rate_hz} Hz (enum: {rate_enum})")
 
-            # PASO 3: Configurar duración según el modo
-            if sampling_mode == "continuous":
-                node_config.unlimitedDuration(True)
-                LOGGER.info("Set sampling mode: CONTINUOUS (unlimited duration)")
-            elif sampling_mode == "duration" and duration_seconds:
-                node_config.unlimitedDuration(False)
-                # Configurar duración en segundos
-                # NOTA: La API de MSCL usa "dataCollectionMethod" con tiempo en segundos
-                try:
-                    # Convertir segundos a milisegundos si es necesario
-                    node_config.timeBetweenBursts(mscl.TimeSpan.Seconds(duration_seconds))
-                    LOGGER.info(f"Set sampling mode: DURATION ({duration_seconds} seconds)")
-                except AttributeError:
-                    LOGGER.warning(f"Could not set duration, using unlimited instead")
-                    node_config.unlimitedDuration(True)
-            elif sampling_mode == "burst":
-                LOGGER.warning("Burst mode not fully implemented yet - using continuous mode")
-                node_config.unlimitedDuration(True)
-            elif sampling_mode == "event":
-                LOGGER.warning("Event-driven mode not fully implemented yet - using continuous mode")
-                node_config.unlimitedDuration(True)
-            else:
-                # Default: continuous
-                node_config.unlimitedDuration(True)
-                LOGGER.info("Set unlimited duration: True (default)")
+            # PASO 3: Configurar parámetros de BURST
+            # burst_duration_seconds: duración de cada burst (cuánto tiempo recolecta datos)
+            # Con 2 segundos: latencia aceptable + buen balance de eficiencia RF
+            burst_duration_seconds = 2.0
+            samples_per_burst = int(sample_rate_hz * burst_duration_seconds)
+
+            # numSweeps: número de muestras a recolectar por burst
+            node_config.numSweeps(samples_per_burst)
+            LOGGER.info(f"Set numSweeps: {samples_per_burst} samples per burst")
+            LOGGER.info(f"  → Burst duration: {burst_duration_seconds}s at {sample_rate_hz} Hz")
+
+            # timeBetweenBursts: intervalo entre bursts (para modo continuo)
+            # Configurar al mismo valor que burst_duration para bursts continuos sin gaps
+            time_between = mscl.TimeSpan.Seconds(burst_duration_seconds)
+            node_config.timeBetweenBursts(time_between)
+            LOGGER.info(f"Set timeBetweenBursts: {burst_duration_seconds} seconds")
+            LOGGER.info(f"  → Bursts continuos sin gaps (real-time-like)")
+
+            # unlimitedDuration: DEBE ser False para burst mode
+            node_config.unlimitedDuration(False)
+            LOGGER.info("Set unlimitedDuration: False (required for burst mode)")
+
+            # Cálculo de eficiencia
+            bursts_per_second = 1.0 / burst_duration_seconds
+            packets_per_second_per_sensor = bursts_per_second  # ~0.5 packets/s
+            LOGGER.info("=" * 80)
+            LOGGER.info("BURST MODE EFFICIENCY:")
+            LOGGER.info(f"  RF packets per sensor: ~{packets_per_second_per_sensor:.2f} packets/s")
+            LOGGER.info(f"  vs. Continuous mode: {sample_rate_hz} packets/s")
+            LOGGER.info(f"  Reduction factor: {sample_rate_hz / packets_per_second_per_sensor:.0f}x")
+            LOGGER.info("=" * 80)
             
             # PASO 4: Habilitar canales (X, Y, Z)
             channels = mscl.ChannelMask()
@@ -377,18 +381,32 @@ class RealMSCLClient(MSCLClient):
             actual_rate_hz = self._sample_rate_enum_to_hz(actual_rate_enum)
             LOGGER.info(f"Verification - Configured rate: {sample_rate_hz} Hz, Actual rate enum: {actual_rate_enum}, Actual rate Hz: {actual_rate_hz} Hz")
 
-            # PASO 7.5: Verificar duración ilimitada
+            # PASO 7.5: Verificar parámetros de burst mode
             try:
                 config_readback = node.getConfig()
                 is_unlimited = config_readback.unlimitedDuration()
-                LOGGER.info(f"✅ Verification - Unlimited duration: {is_unlimited}")
-                if not is_unlimited:
-                    LOGGER.warning(f"⚠️⚠️⚠️ WARNING: Node {sensor_id} NO tiene unlimited duration! Intentando configurar de nuevo...")
-                    config_readback.unlimitedDuration(True)
-                    node.applyConfig(config_readback)
-                    LOGGER.info(f"Re-aplicada configuración con unlimitedDuration=True")
+                actual_num_sweeps = config_readback.numSweeps()
+                actual_time_between = config_readback.timeBetweenBursts()
+
+                LOGGER.info("=" * 80)
+                LOGGER.info("VERIFICACIÓN DE BURST MODE:")
+                LOGGER.info(f"  Sample Rate: {actual_rate_hz} Hz")
+                LOGGER.info(f"  Unlimited Duration: {is_unlimited} (debe ser False para burst)")
+                LOGGER.info(f"  Samples per Burst (numSweeps): {actual_num_sweeps}")
+                LOGGER.info(f"  Time Between Bursts: {actual_time_between.getSeconds()} seconds")
+                LOGGER.info(f"  Burst Duration: ~{actual_num_sweeps / actual_rate_hz:.2f} seconds")
+                LOGGER.info(f"  RF Packets/Second: ~{1.0 / actual_time_between.getSeconds():.2f}")
+                LOGGER.info("=" * 80)
+
+                # Verificar que unlimitedDuration es False (requerido para burst)
+                if is_unlimited:
+                    LOGGER.warning(f"⚠️ WARNING: unlimitedDuration is True but should be False for burst mode!")
+                    LOGGER.warning(f"  Burst mode may not work correctly. Check node configuration.")
+                else:
+                    LOGGER.info(f"✅ Burst mode configured correctly (unlimitedDuration=False)")
+
             except Exception as e:
-                LOGGER.warning(f"Could not verify unlimited duration: {e}")
+                LOGGER.warning(f"Could not verify burst mode configuration: {e}")
 
             # PASO 8: Actualizar info del sensor con frecuencia verificada
             info.sample_rate_hz = actual_rate_hz  # Usar la frecuencia verificada
