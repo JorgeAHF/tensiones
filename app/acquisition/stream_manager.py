@@ -664,19 +664,9 @@ class StreamManager:
             state.session_logger.info(f"Ejes activos: {state.info.axes}")
             state.session_logger.info("")
 
-            # Crear chunk writer para escritura en paralelo
-            from datetime import datetime
-            # Convertir sample_rate a float (puede venir como string)
-            fs_hz = float(state.info.sample_rate_hz)
-            chunk_writer = RealtimeChunkWriter(
-                base_dir=self.storage_base / "acceleration",
-                sensor_id=sensor_id,
-                chunk_duration_minutes=self._chunk_duration_minutes,
-                sample_rate_hz=fs_hz
-            )
-            chunk_writer.start_session(datetime.now())
-            self._chunk_writers[sensor_id] = chunk_writer
-            state.session_logger.info(f"[CHUNK WRITER] ✅ Inicializado para escritura en paralelo (chunks cada {self._chunk_duration_minutes} min, {int(fs_hz * 60 * self._chunk_duration_minutes):,} samples/chunk)")
+            # CHUNK WRITER DESHABILITADO: Causa overhead con múltiples sensores simultáneos
+            # Usar scripts/dividir_csv.py después del monitoreo para generar chunks
+            state.session_logger.info(f"[CHUNK WRITER] DESHABILITADO - usar scripts/dividir_csv.py después del monitoreo para generar chunks")
 
             logger.info(f"[STREAM_MANAGER] Calling start_streaming for {sensor_id}...")
             self.client.start_streaming(sensor_id, callback)
@@ -729,11 +719,7 @@ class StreamManager:
                     state.session_logger.removeHandler(handler)
                 state.session_logger = None
 
-            # Finalizar chunk writer si existe
-            chunk_writer = self._chunk_writers.pop(sensor_id, None)
-            if chunk_writer:
-                chunk_writer.finalize_session()
-                logger.info(f"[CHUNK WRITER] Sesión finalizada para {sensor_id}")
+            # CHUNK WRITER DESHABILITADO: No hay chunk writer que finalizar
 
             state.streaming = False
 
@@ -995,13 +981,8 @@ class StreamManager:
             if state.session_logger:
                 state.session_logger.info(log_msg)
 
-            # Escribir también a los chunks en paralelo
-            chunk_writer = self._chunk_writers.get(sensor_id)
-            if chunk_writer:
-                try:
-                    chunk_writer.append_samples(records)
-                except Exception as chunk_err:
-                    logger.warning(f"[CHUNK WRITER] Error escribiendo a chunks: {chunk_err}")
+            # CHUNK WRITER DESHABILITADO: No escribir a chunks en tiempo real
+            # Los chunks se generarán después con scripts/dividir_csv.py
         else:
             samples_lost = state.samples_received_total - state.samples_written_total
 
