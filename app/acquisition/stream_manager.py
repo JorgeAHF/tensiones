@@ -987,7 +987,6 @@ class StreamManager:
 
             # Inicializar chunk generator si aún no existe (después del primer batch)
             if sensor_id not in self._chunk_writers and accel_writer:
-                from datetime import datetime
                 try:
                     csv_path = accel_writer.current_path
                     chunks_dir = csv_path.parent / "chunks"
