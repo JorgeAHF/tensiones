@@ -664,21 +664,9 @@ class StreamManager:
             state.session_logger.info(f"Ejes activos: {state.info.axes}")
             state.session_logger.info("")
 
-            # Inicializar generador de chunks optimizado basado en timer
-            from datetime import datetime
-            accel_writer = self._get_or_create_accel_writer(sensor_id)
-            csv_path = accel_writer.current_path
-            chunks_dir = csv_path.parent / "chunks"
-
-            chunk_gen = TimedChunkGenerator(
-                csv_path=csv_path,
-                chunks_dir=chunks_dir,
-                sensor_id=sensor_id,
-                chunk_interval_minutes=self._chunk_duration_minutes
-            )
-            chunk_gen.start(datetime.now())
-            self._chunk_writers[sensor_id] = chunk_gen  # Reutilizar el mismo dict
-            state.session_logger.info(f"[CHUNK GEN] ✅ Generador de chunks iniciado (cada {self._chunk_duration_minutes} min, basado en timer, sin overhead)")
+            # Inicializar generador de chunks DESPUÉS del primer batch
+            # El chunk generator se inicializará en _handle_sample cuando el CSV ya exista
+            state.session_logger.info(f"[CHUNK GEN] Se inicializará después del primer batch de datos")
 
             logger.info(f"[STREAM_MANAGER] Calling start_streaming for {sensor_id}...")
             self.client.start_streaming(sensor_id, callback)
@@ -997,8 +985,26 @@ class StreamManager:
             if state.session_logger:
                 state.session_logger.info(log_msg)
 
-            # CHUNK WRITER DESHABILITADO: No escribir a chunks en tiempo real
-            # Los chunks se generarán después con scripts/dividir_csv.py
+            # Inicializar chunk generator si aún no existe (después del primer batch)
+            if sensor_id not in self._chunk_writers and accel_writer:
+                from datetime import datetime
+                try:
+                    csv_path = accel_writer.current_path
+                    chunks_dir = csv_path.parent / "chunks"
+
+                    chunk_gen = TimedChunkGenerator(
+                        csv_path=csv_path,
+                        chunks_dir=chunks_dir,
+                        sensor_id=sensor_id,
+                        chunk_interval_minutes=self._chunk_duration_minutes
+                    )
+                    chunk_gen.start(datetime.now())
+                    self._chunk_writers[sensor_id] = chunk_gen
+                    logger.info(f"[CHUNK GEN] ✅ Generador iniciado para {sensor_id} (cada {self._chunk_duration_minutes} min)")
+                    if state.session_logger:
+                        state.session_logger.info(f"[CHUNK GEN] ✅ Generador de chunks iniciado")
+                except Exception as e:
+                    logger.warning(f"[CHUNK GEN] No se pudo inicializar para {sensor_id}: {e}")
         else:
             samples_lost = state.samples_received_total - state.samples_written_total
 
