@@ -19,7 +19,7 @@ from app.analysis.tension import TensionResult, estimate_tension
 from app.sinks.csv_writer import RotatingCsvWriter
 from app.sinks.parquet_writer import RotatingParquetWriter
 from app.sinks.rotation import RotationPolicy
-from app.sinks.chunk_writer import RealtimeChunkWriter
+from app.sinks.timed_chunk_generator import TimedChunkGenerator
 from app.utils.timeutils import DEFAULT_TZ, format_timestamp, now_local_utc
 from app.utils.validators import QualityAssessment, Thresholds
 
@@ -664,9 +664,21 @@ class StreamManager:
             state.session_logger.info(f"Ejes activos: {state.info.axes}")
             state.session_logger.info("")
 
-            # CHUNK WRITER DESHABILITADO: Causa overhead con múltiples sensores simultáneos
-            # Usar scripts/dividir_csv.py después del monitoreo para generar chunks
-            state.session_logger.info(f"[CHUNK WRITER] DESHABILITADO - usar scripts/dividir_csv.py después del monitoreo para generar chunks")
+            # Inicializar generador de chunks optimizado basado en timer
+            from datetime import datetime
+            accel_writer = self._get_or_create_accel_writer(sensor_id)
+            csv_path = accel_writer.current_path
+            chunks_dir = csv_path.parent / "chunks"
+
+            chunk_gen = TimedChunkGenerator(
+                csv_path=csv_path,
+                chunks_dir=chunks_dir,
+                sensor_id=sensor_id,
+                chunk_interval_minutes=self._chunk_duration_minutes
+            )
+            chunk_gen.start(datetime.now())
+            self._chunk_writers[sensor_id] = chunk_gen  # Reutilizar el mismo dict
+            state.session_logger.info(f"[CHUNK GEN] ✅ Generador de chunks iniciado (cada {self._chunk_duration_minutes} min, basado en timer, sin overhead)")
 
             logger.info(f"[STREAM_MANAGER] Calling start_streaming for {sensor_id}...")
             self.client.start_streaming(sensor_id, callback)
@@ -719,7 +731,11 @@ class StreamManager:
                     state.session_logger.removeHandler(handler)
                 state.session_logger = None
 
-            # CHUNK WRITER DESHABILITADO: No hay chunk writer que finalizar
+            # Detener generador de chunks si existe
+            chunk_gen = self._chunk_writers.pop(sensor_id, None)
+            if chunk_gen:
+                chunk_gen.stop()
+                logger.info(f"[CHUNK GEN] Generador detenido para {sensor_id}")
 
             state.streaming = False
 
