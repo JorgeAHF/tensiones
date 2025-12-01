@@ -306,7 +306,7 @@ class RealMSCLClient(MSCLClient):
             # PASO 3: Configurar parámetros de BURST
             # burst_duration_seconds: duración de cada burst (cuánto tiempo recolecta datos)
             # Con 2 segundos: latencia aceptable + buen balance de eficiencia RF
-            burst_duration_seconds = 2.0
+            burst_duration_seconds = 2  # DEBE SER ENTERO para TimeSpan.Seconds()
             samples_per_burst = int(sample_rate_hz * burst_duration_seconds)
 
             # numSweeps: número de muestras a recolectar por burst
@@ -316,7 +316,8 @@ class RealMSCLClient(MSCLClient):
 
             # timeBetweenBursts: intervalo entre bursts (para modo continuo)
             # Configurar al mismo valor que burst_duration para bursts continuos sin gaps
-            time_between = mscl.TimeSpan.Seconds(burst_duration_seconds)
+            # CRÍTICO: TimeSpan.Seconds() requiere uint64 (entero), NO acepta float
+            time_between = mscl.TimeSpan.Seconds(int(burst_duration_seconds))
             node_config.timeBetweenBursts(time_between)
             LOGGER.info(f"Set timeBetweenBursts: {burst_duration_seconds} seconds")
             LOGGER.info(f"  → Bursts continuos sin gaps (real-time-like)")
