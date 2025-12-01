@@ -343,15 +343,25 @@ class RealMSCLClient(MSCLClient):
                 LOGGER.info("=" * 80)
                 LOGGER.info(f"CONFIGURANDO timeBetweenBursts PARA {num_sensors_in_network} SENSORES:")
 
+                # Calcular mínimo teórico basado en burst_duration
+                # Regla empírica: timeBetweenBursts >= 3-4x burst_duration
+                # (para dar tiempo a transmisión RF + TDMA scheduling)
+                min_theoretical = int(actual_burst_duration * 4)
+                LOGGER.info(f"  Mínimo teórico (4x burst duration): {min_theoretical}s")
+
                 # Estrategia adaptativa basada en número de sensores
                 if num_sensors_in_network <= 2:
                     # Con 1-2 sensores: priorizar BAJA LATENCIA
-                    # Probar valores pequeños primero para operación casi-tiempo-real
-                    test_values_seconds = [5, 10, 15, 20, 30]
+                    # Usar mínimo teórico como base
+                    test_values_seconds = [
+                        max(min_theoretical, 5), 10, 15, 20, 30
+                    ]
                     LOGGER.info("  Estrategia: BAJA LATENCIA (1-2 sensores)")
                 elif num_sensors_in_network <= 4:
                     # Con 3-4 sensores: balance latencia/estabilidad
-                    test_values_seconds = [15, 20, 30, 40]
+                    test_values_seconds = [
+                        max(min_theoretical, 15), 20, 30, 40
+                    ]
                     LOGGER.info("  Estrategia: BALANCE (3-4 sensores)")
                 else:
                     # Con 5+ sensores: priorizar ESTABILIDAD sobre latencia
@@ -359,6 +369,8 @@ class RealMSCLClient(MSCLClient):
                     LOGGER.info("  Estrategia: ESTABILIDAD (5+ sensores)")
                     LOGGER.warning("  ⚠️ Con 7 sensores, la latencia será alta (~60s entre bursts)")
                     LOGGER.warning("  ⚠️ Para baja latencia, use máximo 1-2 sensores simultáneos")
+
+                LOGGER.info(f"  Valores a probar: {test_values_seconds}")
 
                 normalized_time_between = None
 
