@@ -325,18 +325,44 @@ class RealMSCLClient(MSCLClient):
             LOGGER.info(f"  → Requested: {samples_per_burst_desired}, Normalized to: {normalized_num_sweeps}")
             LOGGER.info(f"  → Actual burst duration: {actual_burst_duration:.2f}s at {sample_rate_hz} Hz")
 
-            # timeBetweenBursts: intervalo entre bursts (para modo continuo)
-            # Configurar para bursts continuos sin gaps
-            # CRÍTICO: TimeSpan.Seconds() requiere uint64 (entero), NO acepta float
-            time_between_desired = mscl.TimeSpan.Seconds(int(actual_burst_duration))
+            # timeBetweenBursts: intervalo entre bursts
+            # IMPORTANTE: El hardware tiene un MÍNIMO para timeBetweenBursts que depende de:
+            # - Duración del burst (numSweeps / sampleRate)
+            # - Tiempo de transmisión RF
+            # - Número de nodos en la red
 
-            # NORMALIZAR timeBetweenBursts: el nodo solo acepta ciertos valores
-            normalized_time_between = features.normalizeTimeBetweenBursts(time_between_desired)
-            node_config.timeBetweenBursts(normalized_time_between)
+            # Intentar obtener el mínimo valor permitido
+            try:
+                # Calcular duración mínima considerando tiempo de transmisión
+                # Regla empírica: timeBetweenBursts >= 2 * burst_duration para dar tiempo a transmisión
+                min_time_between_seconds = int(actual_burst_duration * 2)
 
-            LOGGER.info(f"Set timeBetweenBursts: {normalized_time_between.getSeconds()} seconds")
-            LOGGER.info(f"  → Requested: {time_between_desired.getSeconds()}s, Normalized to: {normalized_time_between.getSeconds()}s")
-            LOGGER.info(f"  → Bursts continuos con intervalo normalizado")
+                # Usar al menos 5 segundos para 7 sensores en red sincronizada
+                # Esto permite tiempo suficiente para TDMA scheduling
+                min_time_between_seconds = max(min_time_between_seconds, 5)
+
+                LOGGER.info(f"Calculating timeBetweenBursts:")
+                LOGGER.info(f"  Burst duration: {actual_burst_duration:.2f}s")
+                LOGGER.info(f"  Minimum interval (2x burst): {int(actual_burst_duration * 2)}s")
+                LOGGER.info(f"  Using minimum for 7 sensors: {min_time_between_seconds}s")
+
+                time_between_desired = mscl.TimeSpan.Seconds(min_time_between_seconds)
+
+                # NORMALIZAR timeBetweenBursts al valor válido más cercano
+                normalized_time_between = features.normalizeTimeBetweenBursts(time_between_desired)
+                node_config.timeBetweenBursts(normalized_time_between)
+
+                LOGGER.info(f"Set timeBetweenBursts: {normalized_time_between.getSeconds()} seconds")
+                LOGGER.info(f"  → Requested: {time_between_desired.getSeconds()}s")
+                LOGGER.info(f"  → Normalized: {normalized_time_between.getSeconds()}s")
+
+            except Exception as e:
+                LOGGER.error(f"Error configuring timeBetweenBursts: {e}")
+                # Fallback: usar 10 segundos (valor conservador)
+                fallback_time = mscl.TimeSpan.Seconds(10)
+                normalized_time_between = features.normalizeTimeBetweenBursts(fallback_time)
+                node_config.timeBetweenBursts(normalized_time_between)
+                LOGGER.warning(f"Using fallback timeBetweenBursts: {normalized_time_between.getSeconds()}s")
 
             # unlimitedDuration: DEBE ser False para burst mode
             node_config.unlimitedDuration(False)
