@@ -304,36 +304,57 @@ class RealMSCLClient(MSCLClient):
             LOGGER.info(f"Set sample rate: {sample_rate_hz} Hz (enum: {rate_enum})")
 
             # PASO 3: Configurar parámetros de BURST
+            # CRÍTICO: Los valores de burst deben ser NORMALIZADOS usando NodeFeatures
+            # El hardware solo acepta ciertos valores específicos para numSweeps y timeBetweenBursts
+
+            # Obtener las features del nodo para normalización
+            features = node.features()
+
             # burst_duration_seconds: duración de cada burst (cuánto tiempo recolecta datos)
             # Con 2 segundos: latencia aceptable + buen balance de eficiencia RF
             burst_duration_seconds = 2  # DEBE SER ENTERO para TimeSpan.Seconds()
-            samples_per_burst = int(sample_rate_hz * burst_duration_seconds)
+            samples_per_burst_desired = int(sample_rate_hz * burst_duration_seconds)
 
-            # numSweeps: número de muestras a recolectar por burst
-            node_config.numSweeps(samples_per_burst)
-            LOGGER.info(f"Set numSweeps: {samples_per_burst} samples per burst")
-            LOGGER.info(f"  → Burst duration: {burst_duration_seconds}s at {sample_rate_hz} Hz")
+            # NORMALIZAR numSweeps: el nodo solo acepta ciertos valores
+            # NodeFeatures::normalizeNumSweeps ajusta al valor válido más cercano
+            normalized_num_sweeps = features.normalizeNumSweeps(samples_per_burst_desired)
+            node_config.numSweeps(normalized_num_sweeps)
+
+            actual_burst_duration = normalized_num_sweeps / sample_rate_hz
+            LOGGER.info(f"Set numSweeps: {normalized_num_sweeps} samples per burst")
+            LOGGER.info(f"  → Requested: {samples_per_burst_desired}, Normalized to: {normalized_num_sweeps}")
+            LOGGER.info(f"  → Actual burst duration: {actual_burst_duration:.2f}s at {sample_rate_hz} Hz")
 
             # timeBetweenBursts: intervalo entre bursts (para modo continuo)
-            # Configurar al mismo valor que burst_duration para bursts continuos sin gaps
+            # Configurar para bursts continuos sin gaps
             # CRÍTICO: TimeSpan.Seconds() requiere uint64 (entero), NO acepta float
-            time_between = mscl.TimeSpan.Seconds(int(burst_duration_seconds))
-            node_config.timeBetweenBursts(time_between)
-            LOGGER.info(f"Set timeBetweenBursts: {burst_duration_seconds} seconds")
-            LOGGER.info(f"  → Bursts continuos sin gaps (real-time-like)")
+            time_between_desired = mscl.TimeSpan.Seconds(int(actual_burst_duration))
+
+            # NORMALIZAR timeBetweenBursts: el nodo solo acepta ciertos valores
+            normalized_time_between = features.normalizeTimeBetweenBursts(time_between_desired)
+            node_config.timeBetweenBursts(normalized_time_between)
+
+            LOGGER.info(f"Set timeBetweenBursts: {normalized_time_between.getSeconds()} seconds")
+            LOGGER.info(f"  → Requested: {time_between_desired.getSeconds()}s, Normalized to: {normalized_time_between.getSeconds()}s")
+            LOGGER.info(f"  → Bursts continuos con intervalo normalizado")
 
             # unlimitedDuration: DEBE ser False para burst mode
             node_config.unlimitedDuration(False)
             LOGGER.info("Set unlimitedDuration: False (required for burst mode)")
 
-            # Cálculo de eficiencia
-            bursts_per_second = 1.0 / burst_duration_seconds
-            packets_per_second_per_sensor = bursts_per_second  # ~0.5 packets/s
+            # Cálculo de eficiencia con valores normalizados
+            actual_time_between_sec = normalized_time_between.getSeconds()
+            bursts_per_second = 1.0 / actual_time_between_sec if actual_time_between_sec > 0 else 0
+            packets_per_second_per_sensor = bursts_per_second
             LOGGER.info("=" * 80)
-            LOGGER.info("BURST MODE EFFICIENCY:")
+            LOGGER.info("BURST MODE EFFICIENCY (NORMALIZED VALUES):")
+            LOGGER.info(f"  Samples per burst: {normalized_num_sweeps}")
+            LOGGER.info(f"  Time between bursts: {actual_time_between_sec}s")
+            LOGGER.info(f"  Bursts per second: {bursts_per_second:.2f}")
             LOGGER.info(f"  RF packets per sensor: ~{packets_per_second_per_sensor:.2f} packets/s")
             LOGGER.info(f"  vs. Continuous mode: {sample_rate_hz} packets/s")
-            LOGGER.info(f"  Reduction factor: {sample_rate_hz / packets_per_second_per_sensor:.0f}x")
+            if packets_per_second_per_sensor > 0:
+                LOGGER.info(f"  Reduction factor: {sample_rate_hz / packets_per_second_per_sensor:.0f}x")
             LOGGER.info("=" * 80)
             
             # PASO 4: Habilitar canales (X, Y, Z)
