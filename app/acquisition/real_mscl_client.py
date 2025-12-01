@@ -331,38 +331,55 @@ class RealMSCLClient(MSCLClient):
             # - Tiempo de transmisión RF
             # - Número de nodos en la red
 
-            # Intentar obtener el mínimo valor permitido
+            # CRÍTICO: Consultar el mínimo valor permitido desde el hardware
+            # NO usar valores arbitrarios - el hardware tiene límites específicos
             try:
-                # Calcular duración mínima considerando tiempo de transmisión
-                # Regla empírica: timeBetweenBursts >= 2 * burst_duration para dar tiempo a transmisión
-                min_time_between_seconds = int(actual_burst_duration * 2)
+                LOGGER.info("=" * 80)
+                LOGGER.info("CONSULTANDO LÍMITES DE HARDWARE PARA timeBetweenBursts:")
 
-                # Usar al menos 5 segundos para 7 sensores en red sincronizada
-                # Esto permite tiempo suficiente para TDMA scheduling
-                min_time_between_seconds = max(min_time_between_seconds, 5)
+                # Probar valores crecientes hasta encontrar uno aceptable
+                # Empezar con valores grandes para garantizar éxito
+                test_values_seconds = [60, 30, 20, 15, 10, 5]
 
-                LOGGER.info(f"Calculating timeBetweenBursts:")
-                LOGGER.info(f"  Burst duration: {actual_burst_duration:.2f}s")
-                LOGGER.info(f"  Minimum interval (2x burst): {int(actual_burst_duration * 2)}s")
-                LOGGER.info(f"  Using minimum for 7 sensors: {min_time_between_seconds}s")
+                normalized_time_between = None
+                min_acceptable = None
 
-                time_between_desired = mscl.TimeSpan.Seconds(min_time_between_seconds)
+                for test_value in test_values_seconds:
+                    try:
+                        test_time = mscl.TimeSpan.Seconds(test_value)
+                        normalized = features.normalizeTimeBetweenBursts(test_time)
 
-                # NORMALIZAR timeBetweenBursts al valor válido más cercano
-                normalized_time_between = features.normalizeTimeBetweenBursts(time_between_desired)
+                        LOGGER.info(f"Testing {test_value}s → normalized to {normalized.getSeconds()}s")
+
+                        # Si la normalización funciona, este es un candidato válido
+                        if normalized_time_between is None:
+                            normalized_time_between = normalized
+                            min_acceptable = test_value
+
+                    except Exception as test_err:
+                        LOGGER.warning(f"Value {test_value}s rejected: {test_err}")
+                        continue
+
+                if normalized_time_between is None:
+                    # Si todos fallan, usar un valor MUY grande como fallback
+                    LOGGER.warning("All test values failed, using 120 seconds as emergency fallback")
+                    fallback = mscl.TimeSpan.Seconds(120)
+                    normalized_time_between = features.normalizeTimeBetweenBursts(fallback)
+
                 node_config.timeBetweenBursts(normalized_time_between)
 
-                LOGGER.info(f"Set timeBetweenBursts: {normalized_time_between.getSeconds()} seconds")
-                LOGGER.info(f"  → Requested: {time_between_desired.getSeconds()}s")
-                LOGGER.info(f"  → Normalized: {normalized_time_between.getSeconds()}s")
+                LOGGER.info("=" * 80)
+                LOGGER.info(f"✅ SELECTED timeBetweenBursts: {normalized_time_between.getSeconds()} seconds")
+                LOGGER.info(f"   Burst duration: {actual_burst_duration:.2f}s")
+                LOGGER.info(f"   Samples per burst: {normalized_num_sweeps}")
+                LOGGER.info(f"   Bursts per minute: {60.0 / normalized_time_between.getSeconds():.2f}")
+                LOGGER.info("=" * 80)
 
             except Exception as e:
-                LOGGER.error(f"Error configuring timeBetweenBursts: {e}")
-                # Fallback: usar 10 segundos (valor conservador)
-                fallback_time = mscl.TimeSpan.Seconds(10)
-                normalized_time_between = features.normalizeTimeBetweenBursts(fallback_time)
-                node_config.timeBetweenBursts(normalized_time_between)
-                LOGGER.warning(f"Using fallback timeBetweenBursts: {normalized_time_between.getSeconds()}s")
+                LOGGER.error(f"FATAL: Could not configure timeBetweenBursts: {e}")
+                import traceback
+                LOGGER.error(traceback.format_exc())
+                raise
 
             # unlimitedDuration: DEBE ser False para burst mode
             node_config.unlimitedDuration(False)
