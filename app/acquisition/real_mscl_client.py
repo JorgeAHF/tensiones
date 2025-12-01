@@ -65,6 +65,7 @@ class RealMSCLClient(MSCLClient):
         self._callbacks: Dict[str, Callable[[Sample], None]] = {}
         self._sync_network = None  # Will hold SyncSamplingNetwork
         self._sync_network_started = False
+        self._sync_network_sensors = []  # Track number of sensors for adaptive burst config
         self._gateway_status = GatewayStatus(host="192.168.8.101", port=5000, connected=True, message="Connected to real MSCL Gateway")
         self._datalogging_sessions = {}  # Dict[sensor_id, start_time] for datalogging
 
@@ -331,52 +332,76 @@ class RealMSCLClient(MSCLClient):
             # - Tiempo de transmisión RF
             # - Número de nodos en la red
 
-            # CRÍTICO: Consultar el mínimo valor permitido desde el hardware
-            # NO usar valores arbitrarios - el hardware tiene límites específicos
+            # CRÍTICO: Determinar número de sensores activos en la red
+            # Con pocos sensores (1-2), podemos usar bursts más frecuentes
+            # Con muchos sensores (7), necesitamos bursts menos frecuentes
             try:
-                LOGGER.info("=" * 80)
-                LOGGER.info("CONSULTANDO LÍMITES DE HARDWARE PARA timeBetweenBursts:")
+                # Contar nodos en la red sincronizada
+                num_sensors_in_network = len(self._sync_network_sensors) if hasattr(self, '_sync_network_sensors') else 1
 
-                # Probar valores crecientes hasta encontrar uno aceptable
-                # Empezar con valores grandes para garantizar éxito
-                test_values_seconds = [60, 30, 20, 15, 10, 5]
+                LOGGER.info("=" * 80)
+                LOGGER.info(f"CONFIGURANDO timeBetweenBursts PARA {num_sensors_in_network} SENSORES:")
+
+                # Estrategia adaptativa basada en número de sensores
+                if num_sensors_in_network <= 2:
+                    # Con 1-2 sensores: priorizar BAJA LATENCIA
+                    # Probar valores pequeños primero para operación casi-tiempo-real
+                    test_values_seconds = [5, 10, 15, 20, 30]
+                    LOGGER.info("  Estrategia: BAJA LATENCIA (1-2 sensores)")
+                elif num_sensors_in_network <= 4:
+                    # Con 3-4 sensores: balance latencia/estabilidad
+                    test_values_seconds = [15, 20, 30, 40]
+                    LOGGER.info("  Estrategia: BALANCE (3-4 sensores)")
+                else:
+                    # Con 5+ sensores: priorizar ESTABILIDAD sobre latencia
+                    test_values_seconds = [60, 45, 30]
+                    LOGGER.info("  Estrategia: ESTABILIDAD (5+ sensores)")
+                    LOGGER.warning("  ⚠️ Con 7 sensores, la latencia será alta (~60s entre bursts)")
+                    LOGGER.warning("  ⚠️ Para baja latencia, use máximo 1-2 sensores simultáneos")
 
                 normalized_time_between = None
-                min_acceptable = None
 
                 for test_value in test_values_seconds:
                     try:
                         test_time = mscl.TimeSpan.Seconds(test_value)
                         normalized = features.normalizeTimeBetweenBursts(test_time)
 
-                        LOGGER.info(f"Testing {test_value}s → normalized to {normalized.getSeconds()}s")
+                        LOGGER.info(f"  Probando {test_value}s → normalizado a {normalized.getSeconds()}s")
 
-                        # Si la normalización funciona, este es un candidato válido
-                        if normalized_time_between is None:
-                            normalized_time_between = normalized
-                            min_acceptable = test_value
+                        # Usar el primer valor que normalice exitosamente
+                        normalized_time_between = normalized
+                        LOGGER.info(f"  ✅ Valor aceptado: {normalized.getSeconds()}s")
+                        break
 
                     except Exception as test_err:
-                        LOGGER.warning(f"Value {test_value}s rejected: {test_err}")
+                        LOGGER.warning(f"  ❌ {test_value}s rechazado: {test_err}")
                         continue
 
                 if normalized_time_between is None:
-                    # Si todos fallan, usar un valor MUY grande como fallback
-                    LOGGER.warning("All test values failed, using 120 seconds as emergency fallback")
+                    # Fallback conservador
+                    LOGGER.error("  Todos los valores fallaron, usando fallback de 120s")
                     fallback = mscl.TimeSpan.Seconds(120)
                     normalized_time_between = features.normalizeTimeBetweenBursts(fallback)
 
                 node_config.timeBetweenBursts(normalized_time_between)
 
+                actual_interval = normalized_time_between.getSeconds()
+                bursts_per_min = 60.0 / actual_interval
+                samples_per_min = bursts_per_min * normalized_num_sweeps
+
                 LOGGER.info("=" * 80)
-                LOGGER.info(f"✅ SELECTED timeBetweenBursts: {normalized_time_between.getSeconds()} seconds")
-                LOGGER.info(f"   Burst duration: {actual_burst_duration:.2f}s")
-                LOGGER.info(f"   Samples per burst: {normalized_num_sweeps}")
-                LOGGER.info(f"   Bursts per minute: {60.0 / normalized_time_between.getSeconds():.2f}")
+                LOGGER.info("CONFIGURACIÓN FINAL DE BURST MODE:")
+                LOGGER.info(f"  Sensores en red: {num_sensors_in_network}")
+                LOGGER.info(f"  Muestras por burst: {normalized_num_sweeps}")
+                LOGGER.info(f"  Duración del burst: {actual_burst_duration:.2f}s")
+                LOGGER.info(f"  Intervalo entre bursts: {actual_interval}s")
+                LOGGER.info(f"  Bursts por minuto: {bursts_per_min:.2f}")
+                LOGGER.info(f"  Muestras por minuto: {samples_per_min:.0f} de {sample_rate_hz * 60:.0f} esperadas")
+                LOGGER.info(f"  Cobertura de datos: {(samples_per_min / (sample_rate_hz * 60)) * 100:.1f}%")
                 LOGGER.info("=" * 80)
 
             except Exception as e:
-                LOGGER.error(f"FATAL: Could not configure timeBetweenBursts: {e}")
+                LOGGER.error(f"FATAL: Error configurando timeBetweenBursts: {e}")
                 import traceback
                 LOGGER.error(traceback.format_exc())
                 raise
@@ -824,6 +849,9 @@ class RealMSCLClient(MSCLClient):
         LOGGER.info("=" * 80)
         LOGGER.info(f"INITIALIZING SYNC NETWORK with {len(sensor_ids)} nodes: {sensor_ids}")
         LOGGER.info("=" * 80)
+
+        # Guardar número de sensores para configuración adaptativa de burst mode
+        self._sync_network_sensors = sensor_ids
 
         if self._sync_network_started:
             LOGGER.warning("SyncSamplingNetwork already started - skipping initialization")
