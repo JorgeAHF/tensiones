@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 
 @dataclass
@@ -20,7 +21,7 @@ class RotationPolicy:
         created_at: datetime,
         now: Optional[datetime] = None,
     ) -> bool:
-        now = now or datetime.utcnow()
+        now = now or datetime.now(timezone.utc)
         if self.mode == "time" and self.minutes is not None:
             return now - created_at >= timedelta(minutes=self.minutes)
         if self.mode == "size" and self.max_mb is not None:
@@ -41,19 +42,23 @@ class RotatingFile:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def _next_path(self) -> Path:
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        # Usar hora CST (Central Standard Time - México)
+        cst_tz = ZoneInfo("America/Mexico_City")
+        now_cst = datetime.now(cst_tz)
+        timestamp = now_cst.strftime("%Y%m%d_%H%M%S_%f")
         filename = f"{self.prefix}_{timestamp}.csv"
         return self.base_dir / filename
 
     def _open_new(self) -> Path:
         self._current_path = self._next_path()
-        self._created_at = datetime.utcnow()
+        # Usar UTC internamente para comparaciones de rotación
+        self._created_at = datetime.now(timezone.utc)
         return self._current_path
 
     def path(self) -> Path:
         if self._current_path is None:
             return self._open_new()
-        if self.policy.should_rotate(self._current_path, self._created_at or datetime.utcnow()):
+        if self.policy.should_rotate(self._current_path, self._created_at or datetime.now(timezone.utc)):
             return self._open_new()
         return self._current_path
 

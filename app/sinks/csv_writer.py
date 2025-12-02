@@ -40,12 +40,20 @@ class RotatingCsvWriter:
             return path
 
     def writerows(self, rows: Iterable[Sequence]) -> Path:
-        last_path = None
-        for row in rows:
-            last_path = self.writerow(row)
-        if last_path is None:
-            last_path = self._rotator.path()
-        return last_path
+        """Write multiple rows efficiently - only check rotation once."""
+        with self._lock:
+            path = self._rotator.path()  # Check rotation ONCE
+            self._ensure_header(path)
+            with path.open("a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerows(rows)  # Write all rows at once
+            return path
+
+    @property
+    def current_path(self) -> Path:
+        """Get the current file path (without triggering rotation)."""
+        with self._lock:
+            return self._rotator._current_path or self._rotator.path()
 
 
 __all__ = ["RotatingCsvWriter"]

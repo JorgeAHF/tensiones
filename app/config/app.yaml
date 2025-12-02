@@ -1,28 +1,35 @@
-timezone: "America/Mexico_City"
-default_fs_hz: 256
-mscl_gateway:
-  host: "127.0.0.1"
-  port: 5500
-  auto_connect: true
 analysis:
-  window_sec: 30
-  update_period_sec: 5
+  bandpass:
+  - 0.2
+  - 10
+  fmax_hz: 8
   fmin_hz: 0.3
-  fmax_hz: 8.0
-  welch_window: "hann"
+  max_rel_f1_change: 0.1
   nperseg_sec: 4
   overlap: 0.5
-  bandpass: [0.2, 10.0]
   snr_min_db: 10.0
-  max_rel_f1_change: 0.1
-storage:
-  base_dir: "./data"
-  rotation:
-    mode: "time"
-    minutes: 10
-    max_mb: 100
-ui:
-  refresh_ms: 1000
-  history_hours: 1
+  update_period_sec: 5
+  welch_window: hann
+  window_sec: 30
+default_fs_hz: 128
 modes:
-  demo: true
+  demo: false
+storage:
+  base_dir: ./data
+  raw_stream:
+    enabled: true
+    base_dir: null
+  rotation:
+    max_mb: 100
+    minutes: null  # Sin rotación durante monitoreo - dividir después con script
+    mode: time
+    format: csv  # Opciones: csv (compatible con Excel/gráficas), parquet (5-10x más rápido)
+    compression: snappy  # Solo para Parquet. Opciones: snappy, gzip, brotli
+timezone: America/Mexico_City
+ui:
+  history_hours: 1
+  refresh_ms: 500
+  display_buffer_seconds: 300
+streaming:
+  buffer_seconds: 300
+  sample_rate_hz: 128

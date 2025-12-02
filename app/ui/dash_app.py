@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,6 +11,7 @@ from typing import Any, Dict, List, Optional
 import dash
 import dash_bootstrap_components as dbc
 from dash import Input, Output, State, callback_context, dcc, html, dash_table
+import numpy as np
 import plotly.graph_objects as go
 import yaml
 
@@ -17,6 +19,7 @@ from app.acquisition.stream_manager import RealtimeDataStore, StayDefinition, St
 from app.utils.timeutils import DEFAULT_TZ
 from app.utils.validators import Thresholds
 from app.ui import components
+from app.ui.network_control_tab import create_network_control_tab
 
 logger = logging.getLogger(__name__)
 
@@ -142,25 +145,43 @@ def load_persisted_tension(
     return records
 
 
-def _analysis_to_figures(analysis_state):
+def _analysis_to_figures(analysis_state, sensor_id=None, manager=None):
+    """Convert pre-calculated analysis data to Plotly figures (READ-ONLY).
+    
+    This function ONLY reads from RealtimeDataStore - NO FFT processing.
+    All analysis (PSD, frequency detection, tension calculation) is done
+    by the dedicated FFT thread in StreamManager.
+    """
     if analysis_state is None:
         return go.Figure(), go.Figure(), []
+    
+    # Gráfica de aceleración (solo renderizado)
     accel_records = list(analysis_state.recent_accel)
     if accel_records:
-        timestamps = accel_records[-1].timestamps
-        samples = accel_records[-1].samples
+        last_record = accel_records[-1]
+        timestamps = last_record.timestamps
+        samples = last_record.samples
         fig_time = go.Figure()
-        time_axis = [
-            datetime.fromtimestamp(float(ts), tz=DEFAULT_TZ)
-            if not isinstance(ts, datetime)
-            else ts
-            for ts in timestamps
-        ]
-        fig_time.add_trace(go.Scatter(x=time_axis, y=samples[:, 0], mode="lines", name="Ax"))
-        fig_time.add_trace(go.Scatter(x=time_axis, y=samples[:, 1], mode="lines", name="Ay"))
-        fig_time.add_trace(go.Scatter(x=time_axis, y=samples[:, 2], mode="lines", name="Az"))
+        
+        # Obtener ejes activos desde la configuración del sensor en el manager
+        active_axes = ['x', 'y', 'z']  # Por defecto todos
+        if sensor_id and manager:
+            sensor_state = manager.sensors.get(sensor_id)
+            if sensor_state and sensor_state.info.axes:
+                active_axes = [axis.lower() for axis in sensor_state.info.axes]
+        
+        # Timestamps ya vienen como datetime del coordinator
+        # Solo agregar trazas para los ejes configurados
+        if 'x' in active_axes and samples.shape[1] > 0:
+            fig_time.add_trace(go.Scatter(x=timestamps, y=samples[:, 0], mode="lines", name="Ax"))
+        if 'y' in active_axes and samples.shape[1] > 1:
+            fig_time.add_trace(go.Scatter(x=timestamps, y=samples[:, 1], mode="lines", name="Ay"))
+        if 'z' in active_axes and samples.shape[1] > 2:
+            fig_time.add_trace(go.Scatter(x=timestamps, y=samples[:, 2], mode="lines", name="Az"))
+        
+        axes_str = ''.join([a.upper() for a in active_axes])
         fig_time.update_layout(
-            title="Aceleración reciente",
+            title=f"Aceleración reciente - Ejes activos: {axes_str}",
             xaxis_title="Tiempo",
             yaxis_title="g",
             template="plotly_white",
@@ -168,6 +189,7 @@ def _analysis_to_figures(analysis_state):
     else:
         fig_time = go.Figure()
 
+    # Gráfica PSD (ya calculada por FFT thread)
     psd = analysis_state.psd_cache
     if psd is not None:
         freqs, power = psd
@@ -185,10 +207,12 @@ def _analysis_to_figures(analysis_state):
     else:
         fig_psd = go.Figure()
 
+    # Historial (solo extracción de datos)
     history_points = []
     for timestamp, tension, qa in analysis_state.history:
         if tension.tension_kN is not None:
             history_points.append((timestamp, tension.tension_kN, qa.flag.value))
+    
     return fig_time, fig_psd, history_points
 
 
@@ -208,11 +232,11 @@ class DashApp:
         self.app_config_path = app_config_path
         self.stays_config_path = stays_config_path
         self.app_config = app_config
-        self.demo_mode = bool(self.app_config.get("modes", {}).get("demo", True))
         self.gateway_config = app_config.get("mscl_gateway", {})
         self.storage_base = Path(
             app_config.get("storage", {}).get("base_dir", "./data")
         ).resolve()
+        
         external_stylesheets = [dbc.themes.LUX]
         self.dash_app = dash.Dash(
             __name__,
@@ -590,60 +614,55 @@ class DashApp:
             ],
         )
 
-        history_tab = dbc.Tab(
-            label="Histórico",
-            tab_id="history",
+        # Nueva pestaña: Acelerómetro en Tiempo Real
+        accel_tab = dbc.Tab(
+            label="Acelerómetro",
+            tab_id="accelerometer",
             children=[
+                # Store para mantener el estado de pausa/reanudación
+                dcc.Store(id="accel-paused", data=False),
+                
                 dbc.Card(
                     [
-                        dbc.CardHeader("Consulta de tensión"),
+                        dbc.CardHeader("Datos del Acelerómetro en Tiempo Real - Sensor 10603"),
                         dbc.CardBody(
                             [
                                 dbc.Row(
                                     [
                                         dbc.Col(
                                             [
-                                                dbc.Label("Sensor"),
-                                                dcc.Dropdown(
-                                                    id="history-sensor",
-                                                    options=stay_options,
-                                                    placeholder="Selecciona sensor",
-                                                ),
+                                                html.Div(id="accel-status", className="mt-2"),
                                             ],
-                                            md=6,
+                                            md=9,
                                         ),
                                         dbc.Col(
                                             [
-                                                dbc.Label("Fecha (local)"),
-                                                dcc.DatePickerSingle(
-                                                    id="history-date",
-                                                    date=datetime.now(DEFAULT_TZ)
-                                                    .date()
-                                                    .isoformat(),
-                                                    display_format="YYYY-MM-DD",
+                                                dbc.Button(
+                                                    "⏸ Detener Gráfico",
+                                                    id="accel-pause-btn",
+                                                    color="warning",
+                                                    className="w-100",
                                                 ),
                                             ],
                                             md=3,
                                         ),
+                                    ],
+                                    className="mb-3",
+                                ),
+                                dbc.Row(
+                                    [
                                         dbc.Col(
-                                            dbc.Button(
-                                                "Abrir carpeta datos",
-                                                id="btn-open-folder",
-                                                color="secondary",
-                                                className="mt-4",
-                                            ),
-                                            md=3,
+                                            [
+                                                dcc.Graph(
+                                                    id="accel-graph-combined",
+                                                    config={"displayModeBar": True},
+                                                    style={"height": "600px"},
+                                                ),
+                                            ],
+                                            md=12,
                                         ),
                                     ],
-                                    className="g-3 align-items-end",
                                 ),
-                                dbc.Card(
-                                    [
-                                        dbc.CardBody(dcc.Graph(id="history-graph")),
-                                    ],
-                                    className="shadow-sm mt-3",
-                                ),
-                                html.Div(id="history-status", className="mt-3"),
                             ]
                         ),
                     ],
@@ -651,191 +670,25 @@ class DashApp:
                 ),
             ],
         )
-
-        config_tab = dbc.Tab(
-            label="Configuración",
-            tab_id="config",
-            children=[
-                dbc.Card(
-                    [
-                        dbc.CardHeader("Parámetros de análisis"),
-                        dbc.CardBody(
-                            html.Div(
-                                [
-                                    html.Label("Ventana (s)"),
-                                    dcc.Input(
-                                        id="cfg-window",
-                                        type="number",
-                                        value=analysis_cfg.get("window_sec", 30),
-                                    ),
-                                    html.Label("Periodo actualización (s)"),
-                                    dcc.Input(
-                                        id="cfg-update",
-                                        type="number",
-                                        value=analysis_cfg.get("update_period_sec", 5),
-                                    ),
-                                    html.Label("fmin (Hz)"),
-                                    dcc.Input(
-                                        id="cfg-fmin",
-                                        type="number",
-                                        value=analysis_cfg.get("fmin_hz", 0.3),
-                                    ),
-                                    html.Label("fmax (Hz)"),
-                                    dcc.Input(
-                                        id="cfg-fmax",
-                                        type="number",
-                                        value=analysis_cfg.get("fmax_hz", 8.0),
-                                    ),
-                                    html.Label("nperseg (s)"),
-                                    dcc.Input(
-                                        id="cfg-nperseg",
-                                        type="number",
-                                        value=analysis_cfg.get("nperseg_sec", 4),
-                                    ),
-                                    html.Label("overlap"),
-                                    dcc.Input(
-                                        id="cfg-overlap",
-                                        type="number",
-                                        value=analysis_cfg.get("overlap", 0.5),
-                                    ),
-                                    html.Label("Banda baja (Hz)"),
-                                    dcc.Input(
-                                        id="cfg-band-low",
-                                        type="number",
-                                        value=band_low,
-                                    ),
-                                    html.Label("Banda alta (Hz)"),
-                                    dcc.Input(
-                                        id="cfg-band-high",
-                                        type="number",
-                                        value=band_high,
-                                    ),
-                                ],
-                                style={
-                                    "display": "grid",
-                                    "gridTemplateColumns": "repeat(4, 1fr)",
-                                    "gap": "0.75rem",
-                                },
-                            )
-                        ),
-                    ],
-                    className="mb-4 shadow-sm",
-                ),
-                dbc.Card(
-                    [
-                        dbc.CardHeader("Almacenamiento"),
-                        dbc.CardBody(
-                            [
-                                dbc.Row(
-                                    [
-                                        dbc.Col(
-                                            [
-                                                dbc.Label("Directorio base"),
-                                                dcc.Input(
-                                                    id="cfg-base-dir",
-                                                    value=storage_dir,
-                                                    style={"width": "100%"},
-                                                ),
-                                            ],
-                                            md=6,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                dbc.Label("Rotación"),
-                                                dcc.Dropdown(
-                                                    id="cfg-rotation-mode",
-                                                    options=[
-                                                        {"label": "Tiempo", "value": "time"},
-                                                        {"label": "Tamaño", "value": "size"},
-                                                    ],
-                                                    value=rotation_cfg.get("mode", "time"),
-                                                ),
-                                            ],
-                                            md=3,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                dbc.Label("Minutos"),
-                                                dcc.Input(
-                                                    id="cfg-rotation-minutes",
-                                                    type="number",
-                                                    value=rotation_cfg.get("minutes", 10),
-                                                ),
-                                            ],
-                                            md=1,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                dbc.Label("Tamaño (MB)"),
-                                                dcc.Input(
-                                                    id="cfg-rotation-mb",
-                                                    type="number",
-                                                    value=rotation_cfg.get("max_mb", 100),
-                                                ),
-                                            ],
-                                            md=2,
-                                        ),
-                                    ],
-                                    className="g-3",
-                                ),
-                            ]
-                        ),
-                    ],
-                    className="mb-4 shadow-sm",
-                ),
-                dbc.Card(
-                    [
-                        dbc.CardHeader("Tirantes"),
-                        dbc.CardBody(
-                            [
-                                dash_table.DataTable(
-                                    id="cfg-stays-table",
-                                    columns=[
-                                        {"name": "Stay", "id": "stay"},
-                                        {"name": "Sensor", "id": "sensor"},
-                                        {"name": "K (N/Hz^2)", "id": "k"},
-                                        {"name": "Green", "id": "green"},
-                                        {"name": "Yellow", "id": "yellow"},
-                                        {"name": "Orange", "id": "orange"},
-                                    ],
-                                    data=[
-                                        {
-                                            "stay": stay.stay_id,
-                                            "sensor": stay.sensor_id,
-                                            "k": stay.k_coefficient,
-                                            "green": stay.thresholds.green_max,
-                                            "yellow": stay.thresholds.yellow_max,
-                                            "orange": stay.thresholds.orange_max,
-                                        }
-                                        for stay in self.stays
-                                    ],
-                                    editable=True,
-                                ),
-                                dbc.Button(
-                                    "Guardar configuración",
-                                    id="btn-save-config",
-                                    color="primary",
-                                    className="mt-3",
-                                ),
-                                html.Div(id="config-status", className="mt-3"),
-                            ]
-                        ),
-                    ],
-                    className="mb-4 shadow-sm",
-                ),
-            ],
-        )
+        
+        # Nueva pestaña "Control de Red" estilo SensorConnect
+        network_control_tab = create_network_control_tab()
 
         self.dash_app.layout = dbc.Container(
             [
-                html.H1("MSCL Tension Platform", className="mb-4 fw-bold"),
+                html.H1("MSCL TENSION PLATFORM", className="mb-4 fw-bold"),
                 dbc.Tabs(
-                    [network_tab, realtime_tab, history_tab, config_tab],
+                    [network_control_tab, realtime_tab, accel_tab],
                     id="tabs",
-                    active_tab="network",
+                    active_tab="network-control",
                     className="mb-4",
                 ),
                 dcc.Interval(id="interval", interval=refresh_interval, n_intervals=0),
+                # Interval y Stores para Control de Red (siempre activos)
+                dcc.Interval(id="node-detection-interval", interval=5000, n_intervals=0),
+                dcc.Store(id="network-state-store", data={}),
+                dcc.Store(id="network-control-state", data={"nodes_config": {}}),
+                dcc.Store(id="selected-node-for-config", data=None),
             ],
             fluid=True,
             className="bg-light min-vh-100 py-4",
@@ -843,88 +696,6 @@ class DashApp:
 
     def _register_callbacks(self) -> None:
         app = self.dash_app
-
-        @app.callback(
-            Output("network-content", "children"),
-            Output("sensor-selector", "options"),
-            Output("realtime-sensor", "options"),
-            Output("history-sensor", "options"),
-            Output("gateway-status", "children"),
-            Output("network-summary", "children"),
-            Output("config-sensor", "options"),
-            Input("btn-discover", "n_clicks"),
-            Input("interval", "n_intervals"),
-            State("realtime-sensor", "value"),
-            State("history-sensor", "value"),
-        )
-        def update_network(_, __, realtime_value, history_value):
-            triggered = callback_context.triggered[0]["prop_id"] if callback_context.triggered else ""
-            if "btn-discover" in triggered:
-                states = self.manager.discover()
-            else:
-                states = self.manager.get_status()
-            stay_options = [
-                {"label": stay.stay_id, "value": stay.sensor_id} for stay in self.stays
-            ]
-            valid_values = {opt["value"] for opt in stay_options}
-            default_sensor = stay_options[0]["value"] if stay_options else None
-            if realtime_value in valid_values:
-                selected_realtime = realtime_value
-            else:
-                selected_realtime = default_sensor
-            if history_value in valid_values:
-                selected_history = history_value
-            else:
-                selected_history = default_sensor
-            table = components.network_table(states)
-            gateway_badge = components.gateway_status_badge(self.manager.get_gateway_status())
-            summary = components.network_summary(states, demo_mode=self.demo_mode)
-            return (
-                table,
-                stay_options,
-                stay_options,
-                stay_options,
-                gateway_badge,
-                summary,
-                stay_options,
-            )
-
-        @app.callback(
-            Output("network-feedback", "children"),
-            Output("gateway-status", "children"),
-            Input("btn-connect-gateway", "n_clicks"),
-            Input("btn-disconnect-gateway", "n_clicks"),
-            State("gateway-host", "value"),
-            State("gateway-port", "value"),
-            prevent_initial_call=True,
-        )
-        def control_gateway(connect_clicks, disconnect_clicks, host, port):
-            triggered = callback_context.triggered[0]["prop_id"].split(".")[0] if callback_context.triggered else ""
-            status = self.manager.get_gateway_status()
-            feedback = dash.no_update
-            try:
-                if triggered == "btn-connect-gateway":
-                    host_value = host or self.gateway_config.get("host", "127.0.0.1")
-                    port_value = int(port) if port not in (None, "") else int(
-                        self.gateway_config.get("port", 0)
-                    )
-                    if port_value <= 0:
-                        raise ValueError("El puerto debe ser mayor a 0")
-                    status = self.manager.connect_gateway(host_value, port_value)
-                    self.gateway_config["host"] = host_value
-                    self.gateway_config["port"] = port_value
-                    color = "success" if status.connected else "warning"
-                    message = status.message or "Gateway conectado"
-                    feedback = dbc.Alert(message, color=color, dismissable=True)
-                elif triggered == "btn-disconnect-gateway":
-                    status = self.manager.disconnect_gateway()
-                    message = status.message or "Gateway desconectado"
-                    feedback = dbc.Alert(message, color="warning", dismissable=True)
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.exception("Gateway control error")
-                feedback = dbc.Alert(str(exc), color="danger", dismissable=True)
-            badge = components.gateway_status_badge(status)
-            return feedback, badge
 
         @app.callback(
             Output("config-feedback", "children"),
@@ -937,11 +708,8 @@ class DashApp:
             prevent_initial_call=True,
         )
         def handle_configuration(sensor_id, apply_clicks, sample_rate, axes):
-            triggered = (
-                callback_context.triggered[0]["prop_id"].split(".")[0]
-                if callback_context.triggered
-                else ""
-            )
+            triggered_list = callback_context.triggered or []
+            triggered = triggered_list[0]["prop_id"].split(".")[0] if triggered_list else ""
             if triggered == "config-sensor":
                 if not sensor_id:
                     return dash.no_update, None, []
@@ -979,15 +747,6 @@ class DashApp:
                     alert = dbc.Alert(str(exc), color="danger", dismissable=True)
                     return alert, sample_rate, axes
             return dash.no_update, sample_rate, axes
-
-        @app.callback(
-            Output("history-status", "children"),
-            Input("btn-open-folder", "n_clicks"),
-            prevent_initial_call=True,
-        )
-        def open_folder(_):
-            path = self.storage_base
-            return dbc.Alert(f"Datos en: {path}", color="info", dismissable=True)
 
         @app.callback(
             Output("config-status", "children"),
@@ -1100,7 +859,7 @@ class DashApp:
             analysis = snapshot.get(sensor_id) if sensor_id else None
             stay = next((s for s in self.stays if s.sensor_id == sensor_id), None)
             card = components.realtime_card(stay, analysis) if stay else html.Div("Sin datos")
-            fig_time, fig_psd, history = _analysis_to_figures(analysis)
+            fig_time, fig_psd, history = _analysis_to_figures(analysis, sensor_id, self.manager)
             if target_date is not None:
                 history = [
                     (ts, tension, qa)
@@ -1133,60 +892,6 @@ class DashApp:
             return card, fig_time, fig_psd, fig_hist
 
         @app.callback(
-            Output("history-graph", "figure"),
-            Input("interval", "n_intervals"),
-            Input("history-sensor", "value"),
-            Input("history-date", "date"),
-        )
-        def update_history(_, sensor_id, date_value):
-            if not sensor_id and self.stays:
-                sensor_id = self.stays[0].sensor_id
-            target_date = _parse_date_value(date_value)
-            fig = go.Figure()
-            if not sensor_id:
-                fig.update_layout(
-                    title="Tensión (kN)",
-                    xaxis_title="Tiempo",
-                    yaxis_title="kN",
-                    template="plotly_white",
-                )
-                return fig
-            snapshot = self.realtime.snapshot()
-            analysis = snapshot.get(sensor_id)
-            history_points: List = []
-            if analysis:
-                _, _, history_points = _analysis_to_figures(analysis)
-                if target_date is not None:
-                    history_points = [
-                        (ts, tension, qa)
-                        for ts, tension, qa in history_points
-                        if ts.date() == target_date
-                    ]
-            if not history_points:
-                persisted = load_persisted_tension(
-                    self.storage_base, sensor_id=sensor_id, target_date=target_date
-                )
-                history_points = [
-                    (
-                        rec["t_window_end_local"],
-                        rec["T_kN"],
-                        rec["qa"],
-                    )
-                    for rec in persisted
-                    if rec["t_window_end_local"] is not None and rec["T_kN"] is not None
-                ]
-            if history_points:
-                times, values, _qa = zip(*history_points)
-                fig.add_trace(go.Scatter(x=list(times), y=list(values), mode="lines+markers"))
-            fig.update_layout(
-                title="Tensión (kN)",
-                xaxis_title="Tiempo",
-                yaxis_title="kN",
-                template="plotly_white",
-            )
-            return fig
-
-        @app.callback(
             Output("mode-selector", "value"),
             Input("mode-selector", "value"),
             Input("guided-f1", "value"),
@@ -1208,7 +913,8 @@ class DashApp:
             State("sensor-selector", "value"),
         )
         def control_streams(start_all, stop_all, start_sensor, stop_sensor, sensor_value):
-            triggered = callback_context.triggered[0]["prop_id"] if callback_context.triggered else ""
+            triggered_list = callback_context.triggered or []
+            triggered = triggered_list[0]["prop_id"] if triggered_list else ""
             if "btn-start-all" in triggered:
                 self.manager.start_all()
             elif "btn-stop-all" in triggered:
@@ -1219,8 +925,965 @@ class DashApp:
                 self.manager.stop(sensor_value)
             return sensor_value
 
+        # Callback para controlar el botón de pausa
+        @app.callback(
+            Output("accel-paused", "data"),
+            Output("accel-pause-btn", "children"),
+            Output("accel-pause-btn", "color"),
+            Input("accel-pause-btn", "n_clicks"),
+            State("accel-paused", "data"),
+        )
+        def toggle_pause(n_clicks, is_paused):
+            """Alterna entre pausar y reanudar la actualización del gráfico."""
+            # Manejar el caso inicial (n_clicks es None)
+            if n_clicks is None or n_clicks == 0:
+                return False, "⏸ Detener Gráfico", "warning"
+            
+            # Alternar el estado (manejar caso cuando is_paused es None)
+            new_paused = not (is_paused or False)
+            
+            if new_paused:
+                # Ahora está pausado
+                return True, "▶️ Reanudar Gráfico", "success"
+            else:
+                # Ahora está activo
+                return False, "⏸ Detener Gráfico", "warning"
+
+        @app.callback(
+            Output("accel-graph-combined", "figure"),
+            Output("accel-status", "children"),
+            Input("interval", "n_intervals"),
+            State("accel-paused", "data"),
+        )
+        def update_accelerometer(n, is_paused):
+            """Actualiza la gráfica del acelerómetro en tiempo real - Sensor 10603."""
+            import numpy as np
+            
+            # Si está pausado, no actualizar
+            if is_paused:
+                raise dash.exceptions.PreventUpdate
+            
+            # Siempre usar sensor 10603
+            sensor_id = "10603"
+            
+            try:
+                # Obtener buffer continuo (últimos 3 segundos - balance entre suavidad y performance)
+                buffer_data = self.realtime.get_display_buffer(sensor_id, window_seconds=3.0)
+                
+                if buffer_data is None:
+                    empty_fig = go.Figure()
+                    empty_fig.update_layout(title="⏳ Esperando datos...", template="plotly_white", height=600)
+                    status = dbc.Alert("⏸️ Sin datos - Configure el sensor en la pestaña 'Configuración de Sensores'", color="warning")
+                    return empty_fig, status
+                
+                timestamps, samples = buffer_data
+                
+                # CRÍTICO: Ordenar por timestamp para evitar líneas verticales extrañas
+                if len(timestamps) > 0:
+                    sort_indices = np.argsort(timestamps)
+                    timestamps = timestamps[sort_indices]
+                    samples = samples[sort_indices]
+                
+                # Submuestreo moderado: tomar 1 de cada 2 muestras (128Hz efectivo)
+                # Esto da ~384 puntos por 3 segundos - óptimo para WebGL
+                subsample_rate = 2
+                timestamps = timestamps[::subsample_rate]
+                samples = samples[::subsample_rate]
+                
+                # Calcular tiempos relativos
+                if len(timestamps) > 0:
+                    time_offset = timestamps[0]
+                    times = timestamps - time_offset
+                else:
+                    times = np.array([])
+                
+                # Extraer cada eje
+                if samples.ndim == 2 and samples.shape[1] >= 3:
+                    x_data = samples[:, 0]
+                    y_data = samples[:, 1]
+                    z_data = samples[:, 2]
+                else:
+                    x_data = np.zeros(len(times))
+                    y_data = np.zeros(len(times))
+                    z_data = np.zeros(len(times))
+                
+                # NUEVO: Obtener configuración actual del sensor para saber qué ejes mostrar
+                sensor_state = self.manager.sensors.get(sensor_id)
+                active_axes = ['x', 'y', 'z']  # Por defecto todos
+                if sensor_state and sensor_state.info.axes:
+                    active_axes = [axis.lower() for axis in sensor_state.info.axes]
+                
+                # Crear gráfica OPTIMIZADA con Scattergl (aceleración WebGL)
+                fig = go.Figure()
+                
+                # Solo agregar trazas para los ejes activos
+                if 'x' in active_axes:
+                    fig.add_trace(go.Scattergl(
+                        x=times, y=x_data, mode='lines', name='X',
+                        line=dict(color='#e74c3c', width=1.5),
+                        visible=True,
+                    ))
+                
+                if 'y' in active_axes:
+                    fig.add_trace(go.Scattergl(
+                        x=times, y=y_data, mode='lines', name='Y',
+                        line=dict(color='#3498db', width=1.5),
+                        visible=True,
+                    ))
+                
+                if 'z' in active_axes:
+                    fig.add_trace(go.Scattergl(
+                        x=times, y=z_data, mode='lines', name='Z',
+                        line=dict(color='#2ecc71', width=1.5),
+                        visible=True,
+                    ))
+                
+                # Título dinámico con ejes activos
+                axes_str = ', '.join([a.upper() for a in active_axes])
+                fig.update_layout(
+                    title=f"Acelerómetro 10603 - {len(times)} puntos @ 128Hz | Ejes: {axes_str}",
+                    xaxis_title="Tiempo (s)",
+                    yaxis_title="Aceleración (g)",
+                    template="plotly_white",
+                    height=600,
+                    hovermode='x unified',  # Mejor para tiempo real
+                    showlegend=True,
+                    uirevision='accel-10603',  # ID único y constante - preserva TODOS los estados de UI
+                    margin=dict(l=50, r=20, t=80, b=50),  # Más margen superior para la leyenda
+                    legend=dict(
+                        orientation="h",  # Leyenda horizontal
+                        yanchor="bottom",
+                        y=1.15,  # Más separación del área de gráfica
+                        xanchor="center",  # Centrada
+                        x=0.5,  # En el centro horizontal
+                        bgcolor="rgba(255, 255, 255, 0.8)",  # Fondo semi-transparente
+                        bordercolor="#ddd",
+                        borderwidth=1
+                    ),
+                )
+                
+                # Configuración optimizada de ejes
+                fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+                fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+                
+                status = dbc.Alert(
+                    f"✅ ACTIVO | {len(times)} muestras | Ejes: {axes_str} | Actualización: 500ms",
+                    color="success"
+                )
+                
+                return fig, status
+                
+            except Exception as e:
+                logger.error(f"[ACCEL] Error: {e}", exc_info=True)
+                error_fig = go.Figure()
+                error_fig.update_layout(title=f"❌ Error", template="plotly_white", height=600)
+                status = dbc.Alert(f"❌ Error: {str(e)}", color="danger")
+                return error_fig, status
+
+        # ===== CALLBACKS PARA PESTAÑA DE CONFIGURACIÓN DE SENSORES =====
+        
+        @app.callback(
+            Output("config-sensor-select", "options"),
+            Input("interval", "n_intervals")
+        )
+        def actualizar_lista_sensores(_):
+            """Actualiza la lista de sensores disponibles."""
+            states = self.manager.get_status()
+            options = [
+                {"label": f"{state.info.sensor_id} - {state.info.stay_id}", "value": state.info.sensor_id}
+                for state in states
+            ]
+            return options
+        
+        @app.callback(
+            Output("config-duration-minutes", "disabled"),
+            Input("config-duration-mode", "value")
+        )
+        def toggle_duration_input(mode):
+            """Habilita el input de minutos solo si se selecciona 'timed'."""
+            return mode != "timed"
+        
+        @app.callback(
+            Output("config-active-axes", "value"),
+            Output("bandwidth-warning", "children"),
+            Input("config-active-axes", "value")
+        )
+        def validar_ejes(axes_selected):
+            """Asegura que al menos un eje esté seleccionado."""
+            if not axes_selected or len(axes_selected) == 0:
+                # Forzar al menos el eje Z
+                axes_selected = ["z"]
+                warning = dbc.Alert(
+                    "⚠️ Al menos un eje debe estar activo. Se seleccionó Z por defecto.",
+                    color="warning"
+                )
+            else:
+                n_axes = len(axes_selected)
+                if n_axes == 1:
+                    warning = dbc.Alert(
+                        "✅ 1 canal activo - máxima capacidad de sensores simultáneos",
+                        color="success"
+                    )
+                elif n_axes == 2:
+                    warning = dbc.Alert(
+                        "⚠️ 2 canales activos - capacidad media",
+                        color="info"
+                    )
+                else:
+                    warning = dbc.Alert(
+                        "💡 3 canales activos - menor capacidad de sensores simultáneos",
+                        color="info"
+                    )
+            
+            return axes_selected, warning
+        
+        @app.callback(
+            Output("config-sensor-feedback", "children"),
+            Output("btn-apply-and-monitor", "disabled"),
+            Output("btn-stop-monitoring", "disabled"),
+            Input("btn-apply-and-monitor", "n_clicks"),
+            Input("btn-stop-monitoring", "n_clicks"),
+            State("config-sensor-select", "value"),
+            State("config-sample-rate-new", "value"),
+            State("config-active-axes", "value"),
+            State("config-data-format", "value"),
+            State("config-duration-mode", "value"),
+            State("config-duration-minutes", "value"),
+            prevent_initial_call=True
+        )
+        def controlar_monitoreo(
+            n_clicks_start, 
+            n_clicks_stop, 
+            sensor_id, 
+            sample_rate, 
+            axes, 
+            data_format,
+            duration_mode,
+            duration_minutes
+        ):
+            """Aplica configuración e inicia/detiene monitoreo."""
+            triggered_list = callback_context.triggered or []
+            triggered = triggered_list[0]["prop_id"].split(".")[0] if triggered_list else ""
+            
+            if triggered == "btn-apply-and-monitor":
+                # Validaciones
+                if not sensor_id:
+                    return (
+                        dbc.Alert("❌ Selecciona un sensor primero", color="danger"),
+                        False,  # btn-apply habilitado
+                        True    # btn-stop deshabilitado
+                    )
+                
+                if not axes or len(axes) == 0:
+                    return (
+                        dbc.Alert("❌ Selecciona al menos un eje", color="danger"),
+                        False,
+                        True
+                    )
+                
+                try:
+                    # 1. Configurar el nodo
+                    logger.info(f"Configurando sensor {sensor_id}: fs={sample_rate}Hz, ejes={axes}, formato={data_format}")
+                    
+                    self.manager.configure(
+                        sensor_id=sensor_id,
+                        sample_rate=sample_rate,
+                        axes=axes,
+                        data_format=data_format
+                    )
+                    
+                    # 2. Iniciar streaming
+                    self.manager.start(sensor_id)
+                    
+                    # 3. Si es duración limitada, programar detención
+                    if duration_mode == "timed" and duration_minutes:
+                        # TODO: Implementar timer para detener automáticamente
+                        # (puede ser con threading.Timer en manager)
+                        logger.info(f"Monitoreo programado por {duration_minutes} minutos (detención automática no implementada)")
+                    
+                    feedback = dbc.Alert(
+                        [
+                            html.H5("✅ Monitoreo iniciado correctamente", className="alert-heading"),
+                            html.Hr(),
+                            html.P(f"Sensor: {sensor_id}"),
+                            html.P(f"Frecuencia: {sample_rate} Hz"),
+                            html.P(f"Canales: {', '.join([a.upper() for a in axes])}"),
+                            html.P(f"Formato: {data_format}"),
+                            html.P(f"Duración: {'Ilimitada' if duration_mode == 'unlimited' else f'{duration_minutes} minutos'}"),
+                            html.Hr(),
+                            html.P("Los datos se están guardando en InfluxDB automáticamente.", className="mb-0"),
+                        ],
+                        color="success"
+                    )
+                    
+                    return (
+                        feedback,
+                        True,   # btn-apply deshabilitado (ya está monitoreando)
+                        False   # btn-stop habilitado
+                    )
+                    
+                except Exception as e:
+                    logger.exception(f"Error al iniciar monitoreo de {sensor_id}")
+                    return (
+                        dbc.Alert(f"❌ Error: {str(e)}", color="danger"),
+                        False,
+                        True
+                    )
+            
+            elif triggered == "btn-stop-monitoring":
+                try:
+                    if sensor_id:
+                        self.manager.stop(sensor_id)
+                        logger.info(f"Monitoreo detenido para sensor {sensor_id}")
+                    
+                    return (
+                        dbc.Alert("⏹️ Monitoreo detenido", color="warning"),
+                        False,  # btn-apply habilitado
+                        True    # btn-stop deshabilitado
+                    )
+                except Exception as e:
+                    logger.exception(f"Error al detener monitoreo de {sensor_id}")
+                    return (
+                        dbc.Alert(f"❌ Error al detener: {str(e)}", color="danger"),
+                        True,
+                        False
+                    )
+            
+            return dash.no_update, dash.no_update, dash.no_update
+
+        # ===== CALLBACKS PARA CONTROL DE RED (ESTILO SENSORCONNECT) =====
+        
+        @app.callback(
+            Output("detected-nodes-list", "children"),
+            Input("node-detection-interval", "n_intervals"),
+        )
+        def update_detected_nodes_list(n):
+            """Actualiza la lista de nodos detectados cada 5 segundos."""
+            logger.info(f"[CONTROL-RED] Actualizando lista de nodos (intervalo #{n})")
+            logger.info(f"[CONTROL-RED] Sensores disponibles: {list(self.manager.sensors.keys())}")
+            nodes_cards = []
+            
+            for sensor_id, state in self.manager.sensors.items():
+                # Determinar estado
+                is_streaming = state.streaming
+                last_sample_time = getattr(state, '_last_sample_time', None)
+                
+                if is_streaming:
+                    if last_sample_time and (time.time() - last_sample_time) > 15:
+                        status_badge = dbc.Badge("DESCONECTADO", color="danger", className="me-2")
+                        connection_msg = html.Small(f"Sin datos por {int(time.time() - last_sample_time)}s", className="text-danger")
+                    else:
+                        status_badge = dbc.Badge("ACTIVO", color="success", className="me-2")
+                        connection_msg = html.Small("Conectado", className="text-success")
+                else:
+                    status_badge = dbc.Badge("IDLE", color="secondary", className="me-2")
+                    connection_msg = html.Small("Listo", className="text-muted")
+                
+                # Crear tarjeta del nodo
+                card = dbc.Card(
+                    [
+                        dbc.CardBody(
+                            [
+                                html.H6([
+                                    f"NODO {sensor_id}",
+                                    status_badge,
+                                ]),
+                                connection_msg,
+                                html.Hr(),
+                                html.P([
+                                    html.Strong("Stay: "),
+                                    state.info.stay_id,
+                                ], className="mb-1 small"),
+                                html.P([
+                                    html.Strong("Frecuencia: "),
+                                    f"{state.info.sample_rate_hz} Hz" if state.info.sample_rate_hz else "No configurado",
+                                ], className="mb-1 small"),
+                                html.P([
+                                    html.Strong("Ejes: "),
+                                    ", ".join([a.upper() for a in state.info.axes]) if state.info.axes else "---",
+                                ], className="mb-2 small"),
+                                dbc.Button(
+                                    "CONTROLAR",
+                                    id={"type": "btn-select-node", "index": sensor_id},
+                                    color="dark",
+                                    size="sm",
+                                    className="w-100",
+                                ),
+                            ]
+                        ),
+                    ],
+                    className="mb-3",
+                )
+                nodes_cards.append(card)
+            
+            logger.info(f"[CONTROL-RED] Total de tarjetas de nodos creadas: {len(nodes_cards)}")
+            
+            if not nodes_cards:
+                logger.warning("[CONTROL-RED] No se detectaron nodos")
+                return dbc.Alert("No se detectaron nodos. Esperando...", color="info")
+            
+            logger.info(f"[CONTROL-RED] Retornando {len(nodes_cards)} nodos detectados")
+            return nodes_cards
+
+        @app.callback(
+            Output("sampling-network-modal", "is_open"),
+            Output("network-config-table", "children"),
+            Input("btn-sampling-network", "n_clicks"),
+            Input("btn-close-network-modal", "n_clicks"),
+            Input("btn-apply-network", "n_clicks"),
+            State("sampling-network-modal", "is_open"),
+        )
+        def toggle_sampling_network_modal(n_open, n_close, n_apply, is_open):
+            """Abre/cierra modal de configuración de red."""
+            ctx = callback_context
+            if not ctx.triggered:
+                return is_open, dash.no_update
+            
+            trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+            
+            if trigger_id == "btn-sampling-network":
+                # Generar tabla de configuración
+                table_rows = []
+                for sensor_id, state in self.manager.sensors.items():
+                    row = html.Tr([
+                        html.Td(dbc.Checkbox(id={"type": "network-node-enable", "index": sensor_id}, value=True)),
+                        html.Td(sensor_id),
+                        html.Td(state.info.stay_id),
+                        html.Td(dbc.Select(
+                            id={"type": "network-node-rate", "index": sensor_id},
+                            options=[
+                                {"label": "32 Hz", "value": 32},
+                                {"label": "64 Hz", "value": 64},
+                                {"label": "128 Hz", "value": 128},
+                                {"label": "256 Hz (default)", "value": 256},
+                                {"label": "512 Hz", "value": 512},
+                                {"label": "1024 Hz", "value": 1024},
+                                {"label": "2048 Hz", "value": 2048},
+                                {"label": "4096 Hz", "value": 4096},
+                            ],
+                            value=state.info.sample_rate_hz or 256,
+                        )),
+                        html.Td([
+                            dbc.Checkbox(id={"type": "network-node-axis-x", "index": sensor_id}, value=True, label="X", className="me-2"),
+                            dbc.Checkbox(id={"type": "network-node-axis-y", "index": sensor_id}, value=True, label="Y", className="me-2"),
+                            dbc.Checkbox(id={"type": "network-node-axis-z", "index": sensor_id}, value=True, label="Z"),
+                        ]),
+                        html.Td(dbc.Select(
+                            id={"type": "network-node-format", "index": sensor_id},
+                            options=[
+                                {"label": "Float (32-bit)", "value": "float"},
+                            ],
+                            value="float",
+                            disabled=True,  # Solo Float soportado en modo SYNC
+                        )),
+                    ])
+                    table_rows.append(row)
+                
+                table = dbc.Table(
+                    [
+                        html.Thead(html.Tr([
+                            html.Th("Habilitar"),
+                            html.Th("Nodo"),
+                            html.Th("Stay"),
+                            html.Th("Frecuencia"),
+                            html.Th("Ejes"),
+                            html.Th("Formato"),
+                        ])),
+                        html.Tbody(table_rows),
+                    ],
+                    bordered=True,
+                    hover=True,
+                    responsive=True,
+                    striped=True,
+                )
+                
+                return True, table
+            
+            elif trigger_id == "btn-close-network-modal":
+                return False, dash.no_update
+            
+            # Si se presiona Apply, dejar abierto (será cerrado después de aplicar)
+            elif trigger_id == "btn-apply-network":
+                return False, dash.no_update
+            
+            return is_open, dash.no_update
+
+        @app.callback(
+            Output("network-feedback", "children"),
+            Output("network-state-store", "data"),
+            Input("btn-apply-network", "n_clicks"),
+            State({"type": "network-node-enable", "index": dash.dependencies.ALL}, "value"),
+            State({"type": "network-node-enable", "index": dash.dependencies.ALL}, "id"),
+            State({"type": "network-node-rate", "index": dash.dependencies.ALL}, "value"),
+            State({"type": "network-node-axis-x", "index": dash.dependencies.ALL}, "value"),
+            State({"type": "network-node-axis-y", "index": dash.dependencies.ALL}, "value"),
+            State({"type": "network-node-axis-z", "index": dash.dependencies.ALL}, "value"),
+            State({"type": "network-node-format", "index": dash.dependencies.ALL}, "value"),
+            prevent_initial_call=True,
+        )
+        def apply_and_start_sampling_network(n_clicks, enabled_list, id_list, rates, axis_x, axis_y, axis_z, formats):
+            """Configura e inicia múltiples nodos (Sampling Network)."""
+            import traceback  # Importar al inicio del callback
+
+            logger.info(f"[SAMPLING NETWORK] Callback ejecutado - n_clicks={n_clicks}, enabled_list={enabled_list}")
+
+            if not n_clicks:
+                logger.warning("[SAMPLING NETWORK] n_clicks es None o 0 - abortando")
+                return dash.no_update, dash.no_update
+
+            try:
+                success_sensors = []
+                failed_sensors = []
+                state_data = {}
+                enabled_sensors = []
+
+                # PASO 1: Recolectar todos los sensores habilitados y sus configuraciones
+                for i, (enabled, node_id_dict) in enumerate(zip(enabled_list, id_list)):
+                    if not enabled:
+                        continue
+
+                    sensor_id = node_id_dict["index"]
+                    rate = rates[i]
+
+                    # Construir lista de ejes activos
+                    axes = []
+                    if axis_x[i]:
+                        axes.append("x")
+                    if axis_y[i]:
+                        axes.append("y")
+                    if axis_z[i]:
+                        axes.append("z")
+
+                    data_format = formats[i]
+
+                    # Guardar configuración en state
+                    state_data[sensor_id] = {
+                        "rate": rate,
+                        "axes": axes,
+                        "format": data_format,
+                    }
+
+                    enabled_sensors.append(sensor_id)
+
+                # PASO 2: Configurar todos los sensores ANTES de inicializar la red
+                for i, (enabled, node_id_dict) in enumerate(zip(enabled_list, id_list)):
+                    if not enabled:
+                        continue
+
+                    sensor_id = node_id_dict["index"]
+                    rate = state_data[sensor_id]["rate"]
+                    axes = state_data[sensor_id]["axes"]
+                    data_format = state_data[sensor_id]["format"]
+
+                    try:
+                        # Solo configurar, NO iniciar todavía
+                        logger.info(f"[PASO 2] Configurando nodo {sensor_id}: {rate}Hz, {axes}, {data_format}")
+                        self.manager.configure(sensor_id, sample_rate=rate, axes=axes, data_format=data_format)
+                        logger.info(f"[PASO 2] ✅ Nodo {sensor_id} configurado correctamente")
+                    except Exception as e:
+                        error_detail = traceback.format_exc()
+                        logger.error(f"[PASO 2] ❌ Error configurando nodo {sensor_id}: {e}")
+                        logger.error(error_detail)
+                        failed_sensors.append((sensor_id, str(e)))
+                        continue
+
+                # PASO 3: Inicializar SyncSamplingNetwork con TODOS los sensores configurados
+                if len(enabled_sensors) > 0:
+                    logger.info(f"[PASO 3] Inicializando red con {len(enabled_sensors)} sensores: {enabled_sensors}")
+                    try:
+                        self.manager.client.initialize_sync_network(enabled_sensors)
+                        logger.info(f"[PASO 3] ✅ Red sincronizada inicializada correctamente")
+                    except Exception as e:
+                        error_detail = traceback.format_exc()
+                        logger.error(f"[PASO 3] ❌ Error inicializando red sincronizada: {e}")
+                        logger.error(error_detail)
+                        return dbc.Alert(f"Error inicializando red: {str(e)}", color="danger"), state_data
+
+                # PASO 4: Iniciar el streaming de cada sensor
+                for i, (enabled, node_id_dict) in enumerate(zip(enabled_list, id_list)):
+                    if not enabled:
+                        continue
+
+                    sensor_id = node_id_dict["index"]
+
+                    try:
+                        # Iniciar streaming (los nodos ya están configurados y en la red)
+                        logger.info(f"[PASO 4] Iniciando streaming para nodo {sensor_id}")
+                        self.manager.start(sensor_id)
+                        success_sensors.append(sensor_id)
+                        logger.info(f"[PASO 4] ✅ Nodo {sensor_id} iniciado correctamente")
+                    except Exception as e:
+                        # CRÍTICO: Capturar traceback completo
+                        error_detail = traceback.format_exc()
+
+                        # Registrar en el logger con TODOS los detalles
+                        logger.error(
+                            f"Error iniciando nodo {sensor_id}:\n"
+                            f"Tipo de error: {type(e).__name__}\n"
+                            f"Mensaje: {str(e)}\n"
+                            f"Traceback completo:\n{error_detail}"
+                        )
+
+                        # También imprimir a consola para debugging inmediato
+                        print(f"\n{'='*80}")
+                        print(f"ERROR DETALLADO - Nodo {sensor_id}")
+                        print(f"{'='*80}")
+                        print(f"Tipo: {type(e).__name__}")
+                        print(f"Mensaje: {str(e)}")
+                        print(f"\nTraceback completo:")
+                        print(error_detail)
+                        print(f"{'='*80}\n")
+
+                        failed_sensors.append((sensor_id, str(e)))
+                        logger.error(f"Error iniciando nodo {sensor_id}: {e}")
+                
+                # Iniciar procesamiento FFT para visualización en tiempo real
+                if success_sensors:
+                    try:
+                        self.manager.start_fft_processing()
+                        logger.info("Procesamiento FFT iniciado para visualización en tiempo real")
+                    except Exception as e:
+                        logger.warning(f"No se pudo iniciar procesamiento FFT: {e}")
+                
+                # Generar feedback
+                if success_sensors and not failed_sensors:
+                    feedback = dbc.Alert(
+                        [
+                            html.H5("Sampling Network Iniciado", className="alert-heading"),
+                            html.P(f"Nodos activos: {', '.join(map(str, success_sensors))}"),
+                        ],
+                        color="success",
+                    )
+                elif success_sensors and failed_sensors:
+                    feedback = dbc.Alert(
+                        [
+                            html.H5("Sampling Network Iniciado Parcialmente", className="alert-heading"),
+                            html.P(f"Nodos exitosos: {', '.join(map(str, success_sensors))}"),
+                            html.P(f"Nodos fallidos: {', '.join([str(f[0]) for f in failed_sensors])}"),
+                            html.Hr(),
+                            html.P("Errores:", className="mb-0 font-weight-bold"),
+                            html.Ul([html.Li(f"Nodo {f[0]}: {f[1]}") for f in failed_sensors]),
+                        ],
+                        color="warning",
+                    )
+                else:
+                    feedback = dbc.Alert(
+                        [
+                            html.H5("No se pudo iniciar ningún nodo", className="alert-heading"),
+                            html.P("Errores:", className="mb-0"),
+                            html.Ul([html.Li(f"Nodo {f[0]}: {f[1]}") for f in failed_sensors]),
+                        ],
+                        color="danger",
+                    )
+                
+                logger.info(f"[SAMPLING NETWORK] Retornando feedback - success: {len(success_sensors)}, failed: {len(failed_sensors)}")
+                return feedback, state_data
+                
+            except Exception as e:
+                logger.exception("Error crítico en apply_and_start_sampling_network")
+                return dbc.Alert(f"Error crítico: {str(e)}", color="danger"), {}
+
+        @app.callback(
+            Output("idle-feedback", "children"),
+            Input("btn-set-nodes-idle", "n_clicks"),
+            prevent_initial_call=True,
+        )
+        def set_all_nodes_to_idle(n_clicks):
+            """Detiene todos los nodos y los pone en modo IDLE."""
+            if not n_clicks:
+                return dash.no_update
+            
+            try:
+                # Detener todos los streams
+                stopped_sensors = []
+                for sensor_id in list(self.manager.sensors.keys()):
+                    if self.manager.sensors[sensor_id].streaming:
+                        self.manager.stop(sensor_id)
+                        stopped_sensors.append(sensor_id)
+                
+                logger.info("Todos los streams detenidos (CSV cerrados, InfluxDB detenido)")
+                
+                # Poner nodos en IDLE (solo en modo REAL)
+                if hasattr(self.manager.client, 'nodes'):
+                    idle_results = []
+                    for sensor_id, node in self.manager.client.nodes.items():
+                        try:
+                            logger.info(f"Poniendo nodo {sensor_id} en IDLE...")
+                            idle_status = node.setToIdle()
+                            
+                            # Esperar confirmación (máx 5 segundos)
+                            for _ in range(50):
+                                if idle_status.complete():
+                                    idle_results.append((sensor_id, True))
+                                    logger.info(f"Nodo {sensor_id} en IDLE")
+                                    break
+                                time.sleep(0.1)
+                            else:
+                                idle_results.append((sensor_id, False))
+                                logger.warning(f"Timeout esperando IDLE para nodo {sensor_id}")
+                        except Exception as e:
+                            idle_results.append((sensor_id, False))
+                            logger.error(f"Error poniendo nodo {sensor_id} en IDLE: {e}")
+                    
+                    success_count = sum(1 for r in idle_results if r[1])
+                    success_msg = f"Streams detenidos. Nodos en IDLE: {success_count}/{len(idle_results)}"
+                else:
+                    # Modo DEMO
+                    success_msg = f"Streams detenidos (modo DEMO). Sensores afectados: {len(stopped_sensors)}"
+                
+                # Feedback de éxito
+                feedback = dbc.Alert(
+                        [
+                            html.I(className="bi bi-check-circle-fill me-2"),
+                            html.Span(success_msg),
+                        ],
+                        color="success",
+                    )
+                
+                return feedback
+                
+            except Exception as e:
+                logger.exception("Error en set_all_nodes_to_idle")
+                return dbc.Alert(f"Error: {str(e)}", color="danger")
+
+        @app.callback(
+            Output("network-control-feedback", "children"),
+            Input("btn-discover-sensors", "n_clicks"),
+            prevent_initial_call=True,
+        )
+        def discover_sensors(n_clicks):
+            """Discover wireless sensors and update the nodes list."""
+            if not n_clicks:
+                return dash.no_update
+
+            try:
+                # Call refresh_nodes on the client
+                logger.info("Manual sensor discovery requested")
+                new_sensors = self.manager.client.refresh_nodes()
+
+                # Trigger manager discovery to update internal state
+                self.manager.discover()
+
+                # Build feedback message
+                if new_sensors:
+                    sensor_list = ", ".join([s.sensor_id for s in new_sensors])
+                    feedback = dbc.Alert(
+                        [
+                            html.I(className="bi bi-check-circle-fill me-2"),
+                            html.Span(f"Descubrimiento exitoso: {len(new_sensors)} sensor(es) encontrado(s) - {sensor_list}"),
+                        ],
+                        color="success",
+                    )
+                else:
+                    feedback = dbc.Alert(
+                        [
+                            html.I(className="bi bi-info-circle-fill me-2"),
+                            html.Span("No se encontraron nuevos sensores"),
+                        ],
+                        color="info",
+                    )
+
+                logger.info(f"Sensor discovery completed: {len(new_sensors)} sensor(s) found")
+                return feedback
+
+            except Exception as e:
+                logger.exception("Error en discover_sensors")
+                return dbc.Alert(f"Error: {str(e)}", color="danger")
+
+        @app.callback(
+            Output("individual-node-control-panel", "children"),
+            Input({"type": "btn-select-node", "index": dash.dependencies.ALL}, "n_clicks"),
+            State({"type": "btn-select-node", "index": dash.dependencies.ALL}, "id"),
+            prevent_initial_call=True,
+        )
+        def show_individual_node_controls(n_clicks_list, button_ids):
+            """Muestra controles individuales para el nodo seleccionado."""
+            logger.info(f"[CONTROL-INDIVIDUAL] Callback disparado - n_clicks: {n_clicks_list}, buttons: {button_ids}")
+            ctx = callback_context
+            if not ctx.triggered:
+                logger.warning("[CONTROL-INDIVIDUAL] No hay trigger")
+                return dash.no_update
+            
+            # Identificar qué botón se presionó
+            trigger_id = ctx.triggered[0]["prop_id"]
+            logger.info(f"[CONTROL-INDIVIDUAL] Trigger ID: {trigger_id}")
+            
+            # Extraer sensor_id del trigger
+            import json
+            try:
+                trigger_dict = json.loads(trigger_id.split(".")[0])
+                sensor_id = trigger_dict["index"]
+                logger.info(f"[CONTROL-INDIVIDUAL] Sensor seleccionado: {sensor_id}")
+            except Exception as e:
+                logger.error(f"[CONTROL-INDIVIDUAL] Error parseando trigger: {e}")
+                return dash.no_update
+            
+            # Obtener información del nodo
+            state = self.manager.sensors.get(sensor_id)
+            if not state:
+                return dbc.Alert(f"Nodo {sensor_id} no encontrado", color="danger")
+            
+            is_streaming = state.streaming
+            
+            # Crear panel de control individual
+            panel = dbc.Card(
+                [
+                    dbc.CardHeader(
+                        html.H5(f"Control Individual - Nodo {sensor_id}", className="mb-0")
+                    ),
+                    dbc.CardBody(
+                        [
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        [
+                                            html.P([
+                                                html.Strong("Stay: "),
+                                                state.info.stay_id,
+                                            ]),
+                                            html.P([
+                                                html.Strong("Estado: "),
+                                                dbc.Badge(
+                                                    "ACTIVO" if is_streaming else "IDLE",
+                                                    color="success" if is_streaming else "secondary",
+                                                ),
+                                            ]),
+                                            html.P([
+                                                html.Strong("Frecuencia: "),
+                                                f"{state.info.sample_rate_hz} Hz" if state.info.sample_rate_hz else "No configurado",
+                                            ]),
+                                            html.P([
+                                                html.Strong("Ejes: "),
+                                                ", ".join([a.upper() for a in state.info.axes]) if state.info.axes else "---",
+                                            ]),
+                                        ],
+                                        md=6,
+                                    ),
+                                    dbc.Col(
+                                        [
+                                            html.H6("Acciones:", className="mb-3"),
+                                            dbc.ButtonGroup(
+                                                [
+                                                    dbc.Button(
+                                                        [html.I(className="bi bi-play-fill me-1"), "Sample"],
+                                                        id={"type": "btn-node-sample", "index": sensor_id},
+                                                        color="primary",
+                                                        disabled=is_streaming,
+                                                    ),
+                                                    dbc.Button(
+                                                        [html.I(className="bi bi-pause-fill me-1"), "Set to Idle"],
+                                                        id={"type": "btn-node-idle", "index": sensor_id},
+                                                        color="warning",
+                                                        disabled=not is_streaming,
+                                                    ),
+                                                    dbc.Button(
+                                                        [html.I(className="bi bi-power me-1"), "Sleep"],
+                                                        id={"type": "btn-node-sleep", "index": sensor_id},
+                                                        color="secondary",
+                                                    ),
+                                                ],
+                                                className="w-100",
+                                                vertical=False,
+                                            ),
+                                            html.Div(
+                                                id={"type": "individual-node-feedback", "index": sensor_id},
+                                                className="mt-3",
+                                            ),
+                                        ],
+                                        md=6,
+                                    ),
+                                ],
+                            ),
+                        ]
+                    ),
+                ],
+                className="shadow-sm",
+            )
+            
+            return panel
+        
+        @app.callback(
+            Output({"type": "individual-node-feedback", "index": dash.dependencies.MATCH}, "children"),
+            Input({"type": "btn-node-sample", "index": dash.dependencies.MATCH}, "n_clicks"),
+            Input({"type": "btn-node-idle", "index": dash.dependencies.MATCH}, "n_clicks"),
+            Input({"type": "btn-node-sleep", "index": dash.dependencies.MATCH}, "n_clicks"),
+            State({"type": "btn-node-sample", "index": dash.dependencies.MATCH}, "id"),
+            prevent_initial_call=True,
+        )
+        def handle_individual_node_actions(n_sample, n_idle, n_sleep, button_id):
+            """Maneja las acciones individuales de cada nodo."""
+            ctx = callback_context
+            if not ctx.triggered:
+                return dash.no_update
+            
+            trigger_id = ctx.triggered[0]["prop_id"]
+            sensor_id = button_id["index"]
+            
+            try:
+                # Acción: Sample (configurar e iniciar)
+                if "btn-node-sample" in trigger_id:
+                    # Usar configuración actual del nodo
+                    state = self.manager.sensors.get(sensor_id)
+                    if state:
+                        rate = state.info.sample_rate_hz or 256
+                        axes = state.info.axes or ["x", "y", "z"]
+                        self.manager.configure_sensor(sensor_id, sample_rate_hz=rate, axes=axes)
+                    
+                    self.manager.start(sensor_id)
+                    logger.info(f"Nodo {sensor_id} iniciado individualmente")
+                    return dbc.Alert(f"Nodo {sensor_id} iniciado correctamente", color="success")
+                
+                # Acción: Set to Idle (detener)
+                elif "btn-node-idle" in trigger_id:
+                    self.manager.stop(sensor_id)
+                    
+                    # Poner en IDLE (solo modo REAL)
+                    if hasattr(self.manager.client, 'nodes'):
+                        node = self.manager.client.nodes.get(sensor_id)
+                        if node:
+                            try:
+                                idle_status = node.setToIdle()
+                                for _ in range(50):
+                                    if idle_status.complete():
+                                        break
+                                    time.sleep(0.1)
+                            except Exception as e:
+                                logger.warning(f"Error poniendo nodo {sensor_id} en IDLE: {e}")
+                    
+                    logger.info(f"Nodo {sensor_id} detenido")
+                    return dbc.Alert(f"Nodo {sensor_id} detenido", color="warning")
+                
+                # Acción: Sleep (modo ultra bajo consumo)
+                elif "btn-node-sleep" in trigger_id:
+                    self.manager.stop(sensor_id)
+                    
+                    if hasattr(self.manager.client, 'nodes'):
+                        node = self.manager.client.nodes.get(sensor_id)
+                        if node:
+                            try:
+                                node.sleep()
+                                logger.info(f"Nodo {sensor_id} en modo SLEEP")
+                                return dbc.Alert(
+                                    [
+                                        html.P(f"Nodo {sensor_id} en modo SLEEP"),
+                                        html.P("Requiere ciclo de power para despertar", className="mb-0 small"),
+                                    ],
+                                    color="secondary",
+                                )
+                            except Exception as e:
+                                logger.error(f"Error poniendo nodo {sensor_id} en SLEEP: {e}")
+                                return dbc.Alert(f"Nodo {sensor_id} no encontrado", color="danger")
+                    else:
+                        return dbc.Alert("Modo SLEEP no disponible en modo DEMO", color="info")
+                
+                return dash.no_update
+                
+            except Exception as e:
+                logger.exception(f"Error en acción individual para nodo {sensor_id}")
+                return dbc.Alert(f"Error: {str(e)}", color="danger")
+
     def run(self, host: str = "0.0.0.0", port: int = 8050) -> None:
-        self.dash_app.run_server(host=host, port=port)
+        self.dash_app.run(host=host, port=port)
 
 
 __all__ = ["DashApp", "load_persisted_tension", "TENSION_CSV_HEADERS"]

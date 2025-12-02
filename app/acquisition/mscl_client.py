@@ -60,13 +60,29 @@ class MSCLClient:
     def list_nodes(self) -> List[SensorInfo]:  # pragma: no cover - interface
         raise NotImplementedError
 
-    def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str]) -> None:  # pragma: no cover
+    def refresh_nodes(self) -> List[SensorInfo]:  # pragma: no cover - interface
+        """Re-scan for wireless nodes and update the sensor list."""
+        raise NotImplementedError
+
+    def configure_node(
+        self,
+        sensor_id: str,
+        sample_rate_hz: float,
+        axes: Iterable[str],
+        data_format: str = "float",
+        sampling_mode: str = "continuous",
+        duration_seconds: Optional[int] = None,
+    ) -> None:  # pragma: no cover
         raise NotImplementedError
 
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:  # pragma: no cover
         raise NotImplementedError
 
     def stop_streaming(self, sensor_id: str) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    def reset_sync_network(self) -> None:  # pragma: no cover - interface
+        """Reset SyncSamplingNetwork state to allow restarting sampling."""
         raise NotImplementedError
 
 
@@ -110,13 +126,35 @@ class DemoMSCLClient(MSCLClient):
             return []
         return list(self._sensors.values())
 
-    def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str]) -> None:
+    def refresh_nodes(self) -> List[SensorInfo]:
+        """Re-scan for wireless nodes (demo mode - returns existing nodes)."""
+        logger.info("Demo mode: refresh_nodes called (returning existing nodes)")
+        if not self._connected:
+            return []
+        return list(self._sensors.values())
+
+    def configure_node(
+        self,
+        sensor_id: str,
+        sample_rate_hz: float,
+        axes: Iterable[str],
+        data_format: str = "float",
+        sampling_mode: str = "continuous",
+        duration_seconds: Optional[int] = None,
+    ) -> None:
         info = self._sensors.get(sensor_id)
         if info is None:
             raise KeyError(f"Unknown sensor {sensor_id}")
         info.sample_rate_hz = sample_rate_hz
         info.axes = list(axes)
-        logger.info("Configured demo sensor %s fs=%.2f axes=%s", sensor_id, sample_rate_hz, axes)
+        logger.info(
+            "Configured demo sensor %s fs=%.2f axes=%s format=%s mode=%s",
+            sensor_id,
+            sample_rate_hz,
+            axes,
+            data_format,
+            sampling_mode,
+        )
 
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:
         if not self._connected:
@@ -173,6 +211,10 @@ class DemoMSCLClient(MSCLClient):
         self._threads.pop(sensor_id, None)
         self._stops.pop(sensor_id, None)
         self._callbacks.pop(sensor_id, None)
+
+    def reset_sync_network(self) -> None:
+        """Reset SyncSamplingNetwork state (demo mode - no action needed)."""
+        logger.info("Demo mode: reset_sync_network called (no-op in demo)")
 
 
 class HttpMSCLClient(MSCLClient):
@@ -380,19 +422,42 @@ class HttpMSCLClient(MSCLClient):
                 logger.debug("Skipping malformed sensor entry %s: %s", entry, exc)
         return sensors
 
-    def configure_node(self, sensor_id: str, sample_rate_hz: float, axes: Iterable[str]) -> None:
+    def refresh_nodes(self) -> List[SensorInfo]:
+        """Re-scan for wireless nodes and update the sensor list."""
+        try:
+            self._perform_request("POST", "/nodes/refresh")
+            logger.info("Node refresh requested via HTTP")
+        except Exception as exc:
+            logger.warning("Failed to refresh nodes: %s", exc)
+        # Return updated list
+        return self.list_nodes()
+
+    def configure_node(
+        self,
+        sensor_id: str,
+        sample_rate_hz: float,
+        axes: Iterable[str],
+        data_format: str = "float",
+        sampling_mode: str = "continuous",
+        duration_seconds: Optional[int] = None,
+    ) -> None:
         body = json.dumps(
             {
                 "sample_rate_hz": sample_rate_hz,
                 "axes": list(axes),
+                "data_format": data_format,
+                "sampling_mode": sampling_mode,
+                "duration_seconds": duration_seconds,
             }
         ).encode("utf-8")
         self._perform_request("POST", f"/nodes/{sensor_id}/configure", body=body)
         logger.info(
-            "Configured sensor %s with fs=%.3f and axes=%s via HTTP gateway",
+            "Configured sensor %s with fs=%.3f, axes=%s, format=%s, mode=%s via HTTP gateway",
             sensor_id,
             sample_rate_hz,
             list(axes),
+            data_format,
+            sampling_mode,
         )
 
     def start_streaming(self, sensor_id: str, callback: Callable[[Sample], None]) -> None:
@@ -455,6 +520,14 @@ class HttpMSCLClient(MSCLClient):
         if thread is not None:
             thread.join(timeout=1.0)
         logger.debug("Stopped HTTP streaming for sensor %s", sensor_id)
+
+    def reset_sync_network(self) -> None:
+        """Reset SyncSamplingNetwork state via HTTP."""
+        try:
+            self._perform_request("POST", "/sync_network/reset")
+            logger.info("SyncSamplingNetwork reset requested via HTTP")
+        except Exception as exc:
+            logger.warning("Failed to reset sync network via HTTP: %s", exc)
 
 
 def create_demo_client(stays_config: List[Dict[str, str]], default_fs: float) -> DemoMSCLClient:
